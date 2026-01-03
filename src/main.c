@@ -4,6 +4,7 @@
 #include "capture_api.h"
 #include "ui/render_api.h"
 #include "ui_api.h"
+#include "config_api.h"
 #include <stdio.h>
 #include <netinet/in.h>
 #include "net/protocol.h" // For Packetizer
@@ -302,12 +303,12 @@ typedef struct AppConfig {
     bool start_app;
 } AppConfig;
 
-void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config) {
+void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const PersistentConfig *saved_config) {
     UI_Init(arena); // Init UI Shader
     
-    // Default config
-    strcpy(config->target_ip, "127.0.0.1");
-    config->is_host = true;
+    // Initialize from saved config (or defaults if first run)
+    strcpy(config->target_ip, saved_config->target_ip);
+    config->is_host = saved_config->is_host;
     config->start_app = false;
     
     while (OS_ProcessEvents(window)) {
@@ -390,24 +391,35 @@ int main(int argc, char **argv) {
     WindowContext *window = OS_CreateWindow(&main_arena, 1280, 720, "Harmony Screen Share");
     if (!window) return 1;
     
+    // Load saved configuration
+    PersistentConfig saved_config;
+    Config_Load(&saved_config);
+    
     // Check CLI overrides
     AppConfig config = {0};
     if (argc > 1 && strcmp(argv[1], "viewer") == 0) {
         config.is_host = false;
         config.start_app = true; // Auto-start if CLI arg provided
+        strcpy(config.target_ip, saved_config.target_ip); // Use saved IP
     } else if (argc > 1 && strcmp(argv[1], "host") == 0) {
         config.is_host = true;
         config.start_app = true;
+        strcpy(config.target_ip, saved_config.target_ip); // Use saved IP
     }
     
     // Main application loop - allows returning to menu
     while (1) {
         if (!config.start_app) {
             // Show Menu
-            RunMenu(&main_arena, window, &config);
+            RunMenu(&main_arena, window, &config, &saved_config);
         }
         
         if (config.start_app) {
+            // Save config before starting (in case app crashes)
+            saved_config.is_host = config.is_host;
+            strcpy(saved_config.target_ip, config.target_ip);
+            Config_Save(&saved_config);
+            
             int result;
             if (config.is_host) {
                 result = RunHost(&main_arena, window, config.target_ip);
