@@ -43,18 +43,106 @@ typedef struct UIContext {
     char redo_buffer[256];
     bool has_undo;
     const char *last_active_id;
+    
+    MemoryArena *arena;
 } UIContext;
 
 static UIContext ui;
 
-// Internal helper to get/compute widget rect
-static void UI_GetWidgetRect(int *x, int *y, int w, int h) {
+// --- Style Constants ---
+static const float UI_COLOR_BG_NORMAL[4]   = {0.19f, 0.20f, 0.27f, 1.0f};
+static const float UI_COLOR_BG_HOVER[4]    = {0.27f, 0.28f, 0.35f, 1.0f};
+static const float UI_COLOR_BG_ACTIVE[4]   = {0.35f, 0.36f, 0.44f, 1.0f};
+
+static const float UI_COLOR_TEXT_NORMAL[4] = {0.80f, 0.84f, 0.96f, 1.0f};
+
+static const float UI_CORNER_RADIUS        = 12.0f;
+static const int   UI_ITEM_HEIGHT          = 30;
+static const int   UI_SCROLLBAR_WIDTH      = 6;
+static const float UI_INPUT_CORNER_RADIUS  = 8.0f;
+
+// New Style Constants
+static const float UI_COLOR_INPUT_BG_NORMAL[4]   = {0.09f, 0.09f, 0.15f, 1.0f}; // Dark background for inputs
+static const float UI_COLOR_INPUT_BORDER_NORMAL[4] = {0.27f, 0.28f, 0.35f, 1.0f};
+static const float UI_COLOR_INPUT_BORDER_ACTIVE[4] = {0.54f, 0.71f, 0.98f, 1.0f};
+
+static const float UI_COLOR_SCROLLBAR_TRACK[4]   = {0.1f, 0.1f, 0.12f, 1.0f};
+static const float UI_COLOR_SCROLLBAR_HANDLE[4]  = {0.4f, 0.45f, 0.6f, 1.0f};
+
+static const float UI_DROPDOWN_BG_BACK[4]        = {0.09f, 0.09f, 0.15f, 1.0f};
+static const float UI_DROPDOWN_BG_FRONT[4]       = {0.19f, 0.20f, 0.27f, 0.4f};
+
+// --- Helper Functions ---
+
+static void UI_GetRect(int *x, int *y, int w, int h) {
+    (void)y; // Unused
+    (void)w; // Unused (uses ui.next_centered_w variable if centered)
+    (void)h; // Unused
     if (ui.next_centered) {
         *x = (ui.window_width - ui.next_centered_w) / 2;
         ui.next_centered = false;
     }
-    // For now, we still allow explicit x/y if centered is not set, 
-    // but the intention is to use helpers.
+}
+
+static bool UI_IsHovered(int x, int y, int w, int h) {
+    return (ui.mouse_x >= x && ui.mouse_x <= x + w &&
+            ui.mouse_y >= y && ui.mouse_y <= y + h);
+}
+
+typedef enum {
+    UI_STATE_NORMAL,
+    UI_STATE_HOVER,
+    UI_STATE_ACTIVE
+} UI_WidgetState;
+
+static void UI_DrawWidgetBackground(int x, int y, int w, int h, UI_WidgetState state, float corner_radius) {
+    const float *col;
+    switch (state) {
+        case UI_STATE_HOVER:  col = UI_COLOR_BG_HOVER; break;
+        case UI_STATE_ACTIVE: col = UI_COLOR_BG_ACTIVE; break;
+        default:              col = UI_COLOR_BG_NORMAL; break;
+    }
+    Render_DrawRoundedRect(x, y, w, h, corner_radius, col[0], col[1], col[2], col[3]);
+}
+
+static void UI_DrawTruncatedText(const char *text, int x, int y, int w, int h, bool center) {
+    (void)center; // Unused for now
+    char display_text[256];
+    strncpy(display_text, text, sizeof(display_text) - 1);
+    display_text[sizeof(display_text) - 1] = '\0';
+
+    // Check if full text fits
+    float full_width = Render_GetTextWidth(display_text, 1.8f);
+    int available_width = w - 20; // Padding
+
+    if ((int)full_width > available_width) {
+        int len = strlen(display_text);
+        if (len > 3) {
+             while (len > 3) {
+                 display_text[len] = '\0';
+                 char temp[300];
+                 snprintf(temp, sizeof(temp), "%s...", display_text);
+                 if ((int)Render_GetTextWidth(temp, 1.8f) <= available_width) {
+                     strcpy(display_text, temp);
+                     break;
+                 }
+                 len--;
+                 display_text[len] = '\0'; // shorten for next iteration checks
+             }
+        }
+    }
+
+    // Default to ~vertical center
+    int text_y = y + (h / 2) - 8; 
+    // If exact centering logic differs per widget, we might need to parameterize y-offset or alignment
+    
+    // Using standard colors
+    Render_DrawText(display_text, x + 10, text_y, 1.8f, UI_COLOR_TEXT_NORMAL[0], UI_COLOR_TEXT_NORMAL[1], UI_COLOR_TEXT_NORMAL[2], UI_COLOR_TEXT_NORMAL[3]);
+}
+
+// Internal helper to get/compute widget rect (Deprecated/Legacy wrapper if needed, but we typically use UI_GetRect inline)
+static void UI_GetWidgetRect(int *x, int *y, int w, int h) {
+    UI_GetRect(x, y, w, h);
 }
 
 // API Expansion
@@ -67,7 +155,7 @@ static void GetDropdownRect(int *x, int *y, int *w, int *h) {
     *x = ui.dropdown_x;
     *w = ui.dropdown_w;
     
-    int item_h = 30;
+    int item_h = UI_ITEM_HEIGHT;
     int max_view = 8;
     int display_count = (ui.dropdown_count < max_view) ? ui.dropdown_count : max_view;
     int list_h = display_count * item_h;
@@ -82,8 +170,48 @@ static void GetDropdownRect(int *x, int *y, int *w, int *h) {
     *h = list_h;
 }
 
+static void UI_DrawScrollbar(int x, int y, int h, int content_h, int view_h, int scroll_offset) {
+    if (content_h <= view_h) return;
+
+    int sb_w = UI_SCROLLBAR_WIDTH;
+    int sb_x = x - sb_w - 2; // Position relative to right edge of container given as x
+    int sb_track_h = h;
+    
+    Render_DrawRect(sb_x, y, sb_w, sb_track_h, UI_COLOR_SCROLLBAR_TRACK[0], UI_COLOR_SCROLLBAR_TRACK[1], UI_COLOR_SCROLLBAR_TRACK[2], UI_COLOR_SCROLLBAR_TRACK[3]);
+    
+    float handle_h_ratio = (float)view_h / (float)content_h;
+    int handle_h = (int)(sb_track_h * handle_h_ratio);
+    if (handle_h < 20) handle_h = 20;
+    
+    (void)scroll_offset;
+    // Assuming scroll_offset is in "items" units not pixels in the current codebase logic...
+    // Wait, the current logic calculates handle position based on item index offset.
+    // The previous code was:
+    // float scroll_ratio = (float)ui.dropdown_scroll_offset / (float)(ui.dropdown_count - display_count);
+    // Let's adapt the helper to take normalized ratio or sufficient info.
+    // Actually, passing ratio might be cleaner.
+}
+// Redefining to match existing logic better
+static void UI_DrawScrollbarV(int x, int y, int h, int total_items, int visible_items, int scroll_offset) {
+    if (total_items <= visible_items) return;
+
+    int sb_w = UI_SCROLLBAR_WIDTH;
+    int sb_x = x - sb_w - 2;
+    
+    Render_DrawRect(sb_x, y, sb_w, h, UI_COLOR_SCROLLBAR_TRACK[0], UI_COLOR_SCROLLBAR_TRACK[1], UI_COLOR_SCROLLBAR_TRACK[2], UI_COLOR_SCROLLBAR_TRACK[3]);
+    
+    float handle_h_ratio = (float)visible_items / (float)total_items;
+    int handle_h = (int)(h * handle_h_ratio);
+    if (handle_h < 20) handle_h = 20;
+    
+    float scroll_ratio = (float)scroll_offset / (float)(total_items - visible_items);
+    int handle_y = y + (int)((h - handle_h) * scroll_ratio);
+    
+    Render_DrawRoundedRect(sb_x, handle_y, sb_w, handle_h, 3.0f, UI_COLOR_SCROLLBAR_HANDLE[0], UI_COLOR_SCROLLBAR_HANDLE[1], UI_COLOR_SCROLLBAR_HANDLE[2], UI_COLOR_SCROLLBAR_HANDLE[3]);
+}
+
 void UI_Init(MemoryArena *arena) {
-    (void)arena;
+    ui.arena = arena;
 }
 
 void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y, bool mouse_down, int mouse_scroll, char input_char, bool paste_requested, bool ctrl_held) {
@@ -109,8 +237,7 @@ void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y
             int ox, oy, ow, oh;
             GetDropdownRect(&ox, &oy, &ow, &oh);
             
-            bool inside_overlay = (ui.mouse_x >= ox && ui.mouse_x <= ox + ow &&
-                                   ui.mouse_y >= oy && ui.mouse_y <= oy + oh);
+            bool inside_overlay = UI_IsHovered(ox, oy, ow, oh);
                                    
              if (inside_overlay) {
                  ui.overlay_consumed_click = true;
@@ -128,7 +255,7 @@ void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y
 
 void UI_EndFrame() {
     if (strlen(ui.open_dropdown_id) > 0) {
-        int item_h = 30;
+        int item_h = UI_ITEM_HEIGHT;
         int max_view = 8;
         int display_count = (ui.dropdown_count < max_view) ? ui.dropdown_count : max_view;
         int list_h = display_count * item_h;
@@ -142,8 +269,7 @@ void UI_EndFrame() {
              int x_rect, y_rect, w_rect, h_rect;
              GetDropdownRect(&x_rect, &y_rect, &w_rect, &h_rect);
              
-             bool inside_list = (ui.mouse_x >= x_rect && ui.mouse_x <= x_rect + w_rect &&
-                                 ui.mouse_y >= y_rect && ui.mouse_y <= y_rect + h_rect);
+             bool inside_list = UI_IsHovered(x_rect, y_rect, w_rect, h_rect);
              
              if (!inside_list) {
                  if (ui.mouse_pressed) { 
@@ -153,11 +279,10 @@ void UI_EndFrame() {
         }
         
         if (strlen(ui.open_dropdown_id) > 0) {
-            Render_DrawRoundedRect(x, y_start, ui.dropdown_w, list_h, 12.0f, 0.09f, 0.09f, 0.15f, 1.0f);
-            Render_DrawRoundedRect(x, y_start, ui.dropdown_w, list_h, 12.0f, 0.19f, 0.20f, 0.27f, 0.4f); 
+            Render_DrawRoundedRect(x, y_start, ui.dropdown_w, list_h, UI_CORNER_RADIUS, UI_DROPDOWN_BG_BACK[0], UI_DROPDOWN_BG_BACK[1], UI_DROPDOWN_BG_BACK[2], UI_DROPDOWN_BG_BACK[3]);
+            Render_DrawRoundedRect(x, y_start, ui.dropdown_w, list_h, UI_CORNER_RADIUS, UI_DROPDOWN_BG_FRONT[0], UI_DROPDOWN_BG_FRONT[1], UI_DROPDOWN_BG_FRONT[2], UI_DROPDOWN_BG_FRONT[3]);
             
-            bool mouse_over_overlay = (ui.mouse_x >= x && ui.mouse_x <= x + ui.dropdown_w &&
-                                       ui.mouse_y >= y_start && ui.mouse_y <= y_start + list_h);
+            bool mouse_over_overlay = UI_IsHovered(x, y_start, ui.dropdown_w, list_h);
             if (mouse_over_overlay && ui.mouse_scroll != 0) {
                 ui.dropdown_scroll_offset -= ui.mouse_scroll;
             }
@@ -175,15 +300,14 @@ void UI_EndFrame() {
                 int idx = start_idx + i;
                 int item_y = y_start + (i * item_h);
                 
-                bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + item_active_w &&
-                              ui.mouse_y >= item_y && ui.mouse_y <= item_y + item_h);
+                bool hover = UI_IsHovered(x, item_y, item_active_w, item_h);
                 
                 if (hover) ui.next_cursor = OS_CURSOR_HAND;
                 
                 bool is_selected = (*ui.dropdown_selected_id == ui.dropdown_items[idx].id);
                 
                 if (hover) {
-                    Render_DrawRect(x + 5, item_y, item_active_w - 10, item_h, 0.27f, 0.28f, 0.35f, 1.0f);
+                    Render_DrawRect(x + 5, item_y, item_active_w - 10, item_h, UI_COLOR_BG_HOVER[0], UI_COLOR_BG_HOVER[1], UI_COLOR_BG_HOVER[2], UI_COLOR_BG_HOVER[3]);
                     if (ui.mouse_pressed || ui.overlay_consumed_click) {
                         *ui.dropdown_selected_id = ui.dropdown_items[idx].id;
                         ui.open_dropdown_id[0] = '\0'; 
@@ -191,38 +315,15 @@ void UI_EndFrame() {
                         ui.overlay_consumed_click = false; 
                     }
                 } else if (is_selected) {
-                    Render_DrawRect(x + 5, item_y, item_active_w - 10, item_h, 0.35f, 0.36f, 0.44f, 1.0f);
+                    Render_DrawRect(x + 5, item_y, item_active_w - 10, item_h, UI_COLOR_BG_ACTIVE[0], UI_COLOR_BG_ACTIVE[1], UI_COLOR_BG_ACTIVE[2], UI_COLOR_BG_ACTIVE[3]);
                 }
                 
-                char display_text[128];
-                strncpy(display_text, ui.dropdown_items[idx].name, sizeof(display_text) - 1);
-                display_text[sizeof(display_text) - 1] = '\0';
-                
-                int max_chars = (item_active_w - 15) / 10; 
-                if ((int)strlen(display_text) > max_chars && max_chars > 3) {
-                    display_text[max_chars - 3] = '.';
-                    display_text[max_chars - 2] = '.';
-                    display_text[max_chars - 1] = '.';
-                    display_text[max_chars] = '\0';
-                }
-                Render_DrawText(display_text, x + 15, item_y + 6, 1.8f, 0.80f, 0.84f, 0.96f, 1.0f);
+                UI_DrawTruncatedText(ui.dropdown_items[idx].name, x + 5, item_y, item_active_w - 10, item_h, false); // Adjusted rect for padding
             }
             
             if (ui.dropdown_count > display_count) {
-                int sb_w = 6;
-                int sb_x = x + ui.dropdown_w - sb_w - 2;
-                int sb_track_h = list_h;
-                
-                Render_DrawRect(sb_x, y_start, sb_w, sb_track_h, 0.1f, 0.1f, 0.12f, 1.0f);
-                
-                float handle_h_ratio = (float)display_count / (float)ui.dropdown_count;
-                int handle_h = (int)(sb_track_h * handle_h_ratio);
-                if (handle_h < 20) handle_h = 20;
-                
-                float scroll_ratio = (float)ui.dropdown_scroll_offset / (float)(ui.dropdown_count - display_count);
-                int handle_y = y_start + (int)((sb_track_h - handle_h) * scroll_ratio);
-                
-                Render_DrawRoundedRect(sb_x, handle_y, sb_w, handle_h, 3.0f, 0.4f, 0.45f, 0.6f, 1.0f);
+                int sb_x = x + ui.dropdown_w; 
+                UI_DrawScrollbarV(sb_x, y_start, list_h, ui.dropdown_count, display_count, ui.dropdown_scroll_offset);
             }
         }
     }
@@ -234,32 +335,24 @@ bool UI_Button(const char *text, int x, int y, int w, int h) {
     int min_w = (int)tw + 40; // Padding
     if (w < min_w) w = min_w;
 
-    if (ui.next_centered) {
-        x = (ui.window_width - w) / 2;
-        ui.next_centered = false;
-    }
+    UI_GetRect(&x, &y, w, h);
 
-    bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
-                  ui.mouse_y >= y && ui.mouse_y <= y + h);
+    bool hover = UI_IsHovered(x, y, w, h);
     
     if (hover) ui.next_cursor = OS_CURSOR_HAND;
     
-    float r, g, b;
-    if (hover && ui.mouse_down) {
-         r = 0.35f; g = 0.36f; b = 0.44f;
-    } else if (hover) {
-         r = 0.27f; g = 0.28f; b = 0.35f;
-    } else {
-         r = 0.19f; g = 0.20f; b = 0.27f;
+    UI_WidgetState state = UI_STATE_NORMAL;
+    if (hover) {
+        state = ui.mouse_down ? UI_STATE_ACTIVE : UI_STATE_HOVER;
     }
     
-    Render_DrawRoundedRect(x, y, w, h, 12.0f, r, g, b, 1.0f);
+    UI_DrawWidgetBackground(x, y, w, h, state, UI_CORNER_RADIUS);
     
     int char_h = 16;
     int text_x = x + (w - (int)tw) / 2;
     int text_y = y + (h - char_h) / 2;
     
-    Render_DrawText(text, text_x, text_y, 2.0f, 0.80f, 0.84f, 0.96f, 1.0f);
+    Render_DrawText(text, text_x, text_y, 2.0f, UI_COLOR_TEXT_NORMAL[0], UI_COLOR_TEXT_NORMAL[1], UI_COLOR_TEXT_NORMAL[2], UI_COLOR_TEXT_NORMAL[3]);
     
     return hover && ui.mouse_pressed;
 }
@@ -274,13 +367,8 @@ void UI_Label(const char *text, int x, int y, float scale) {
 }
 
 bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, int w, int h) {
-    if (ui.next_centered) {
-        x = (ui.window_width - ui.next_centered_w) / 2;
-        ui.next_centered = false;
-    }
-
-    bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
-                  ui.mouse_y >= y && ui.mouse_y <= y + h);
+    UI_GetRect(&x, &y, w, h);
+    bool hover = UI_IsHovered(x, y, w, h);
     
     if (hover) {
         ui.next_cursor = OS_CURSOR_TEXT;
@@ -292,11 +380,11 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
     bool is_active = (ui.active_id == id);
     
     if (is_active) {
-        Render_DrawRoundedRect(x-2, y-2, w+4, h+4, 10.0f, 0.54f, 0.71f, 0.98f, 1.0f);
-        Render_DrawRoundedRect(x, y, w, h, 8.0f, 0.09f, 0.09f, 0.15f, 1.0f);
+        Render_DrawRoundedRect(x-2, y-2, w+4, h+4, UI_INPUT_CORNER_RADIUS+2.0f, UI_COLOR_INPUT_BORDER_ACTIVE[0], UI_COLOR_INPUT_BORDER_ACTIVE[1], UI_COLOR_INPUT_BORDER_ACTIVE[2], UI_COLOR_INPUT_BORDER_ACTIVE[3]);
+        Render_DrawRoundedRect(x, y, w, h, UI_INPUT_CORNER_RADIUS, UI_COLOR_INPUT_BG_NORMAL[0], UI_COLOR_INPUT_BG_NORMAL[1], UI_COLOR_INPUT_BG_NORMAL[2], UI_COLOR_INPUT_BG_NORMAL[3]);
     } else {
-        Render_DrawRoundedRect(x-1, y-1, w+2, h+2, 9.0f, 0.27f, 0.28f, 0.35f, 1.0f);
-        Render_DrawRoundedRect(x, y, w, h, 8.0f, 0.09f, 0.09f, 0.15f, 1.0f);
+        Render_DrawRoundedRect(x-1, y-1, w+2, h+2, UI_INPUT_CORNER_RADIUS+1.0f, UI_COLOR_INPUT_BORDER_NORMAL[0], UI_COLOR_INPUT_BORDER_NORMAL[1], UI_COLOR_INPUT_BORDER_NORMAL[2], UI_COLOR_INPUT_BORDER_NORMAL[3]);
+        Render_DrawRoundedRect(x, y, w, h, UI_INPUT_CORNER_RADIUS, UI_COLOR_INPUT_BG_NORMAL[0], UI_COLOR_INPUT_BG_NORMAL[1], UI_COLOR_INPUT_BG_NORMAL[2], UI_COLOR_INPUT_BG_NORMAL[3]);
     }
 
     bool changed = false;
@@ -401,27 +489,8 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
         }
         
         if (ui.paste_requested) {
-            // We need a memory arena for OS_GetClipboardText.
-            // Since UI doesn't have its own arena passed everywhere, 
-            // for MVP/Handmade simplicity we might use a transient arena or 
-            // assume OS_GetClipboardText returns a static buffer or we pass it in.
-            // Actually, OS_GetClipboardText signature I added takes an arena.
-            // Let's assume we use a temporary arena if available, or just a small buffer for now.
-            // Actually, main.c has arenas. 
-            // Let's try to get a temporary string from OS.
-            
-            // For now, let's just use a fixed buffer approach for OS_GetClipboardText if arena is NULL?
-            // Or we add a way to get text without arena?
-            // Let's stick to the signature but maybe use a local stack one if reasonable? No.
-            // Let's assume we can use a small stack arena for this call.
-            
-            uint8_t temp_mem[4096];
-            MemoryArena transient_arena;
-            transient_arena.base = temp_mem;
-            transient_arena.size = sizeof(temp_mem);
-            transient_arena.used = 0;
-            
-            const char *clipboard = OS_GetClipboardText(&transient_arena);
+            TemporaryMemory temp = BeginTemporaryMemory(ui.arena);
+            const char *clipboard = OS_GetClipboardText(ui.arena);
             if (clipboard && clipboard[0]) {
                 int len = strlen(buffer);
                 int clip_len = strlen(clipboard);
@@ -438,11 +507,14 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
                     changed = true;
                 }
             }
+            EndTemporaryMemory(temp);
+            ui.paste_requested = false;
         }
     }
 
     // Center text vertically
-    Render_DrawText(buffer, x + 10, y + (h - 18) / 2, 2.25f, 1.0f, 1.0f, 1.0f, 1.0f);
+    // Center text vertically
+    Render_DrawText(buffer, x + 10, y + (h - 18) / 2, 2.25f, UI_COLOR_TEXT_NORMAL[0], UI_COLOR_TEXT_NORMAL[1], UI_COLOR_TEXT_NORMAL[2], UI_COLOR_TEXT_NORMAL[3]);
 
     // Draw cursor
     if (is_active && (int)(OS_GetTime() * 2) % 2 == 0) {
@@ -461,14 +533,12 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
 
 bool UI_List(const char *id, AudioNodeInfo *items, int count, uint32_t *selected_id, int x, int y, int w, int h) {
     (void)id;
-    Render_DrawRoundedRect(x, y, w, h, 5.0f, 0.05f, 0.05f, 0.08f, 1.0f); 
     
-    Render_DrawRect(x, y, w, 2, 0.3f, 0.3f, 0.3f, 1.0f); 
-    Render_DrawRect(x, y + h - 2, w, 2, 0.3f, 0.3f, 0.3f, 1.0f); 
-    Render_DrawRect(x, y, 2, h, 0.3f, 0.3f, 0.3f, 1.0f); 
-    Render_DrawRect(x + w - 2, y, 2, h, 0.3f, 0.3f, 0.3f, 1.0f); 
+    // Draw Border and Background using standard styles
+    Render_DrawRoundedRect(x-1, y-1, w+2, h+2, UI_INPUT_CORNER_RADIUS + 1.0f, UI_COLOR_INPUT_BORDER_NORMAL[0], UI_COLOR_INPUT_BORDER_NORMAL[1], UI_COLOR_INPUT_BORDER_NORMAL[2], UI_COLOR_INPUT_BORDER_NORMAL[3]);
+    Render_DrawRoundedRect(x, y, w, h, UI_INPUT_CORNER_RADIUS, UI_COLOR_INPUT_BG_NORMAL[0], UI_COLOR_INPUT_BG_NORMAL[1], UI_COLOR_INPUT_BG_NORMAL[2], UI_COLOR_INPUT_BG_NORMAL[3]);
 
-    int item_h = 30;
+    int item_h = UI_ITEM_HEIGHT;
     int visible_items = h / item_h;
     
     int start_y = y + 5;
@@ -479,8 +549,7 @@ bool UI_List(const char *id, AudioNodeInfo *items, int count, uint32_t *selected
         
         int item_y = start_y + (i * item_h);
         
-        bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
-                      ui.mouse_y >= item_y && ui.mouse_y <= item_y + item_h);
+        bool hover = UI_IsHovered(x, item_y, w, item_h);
         
         if (hover) ui.next_cursor = OS_CURSOR_HAND;
         
@@ -492,24 +561,12 @@ bool UI_List(const char *id, AudioNodeInfo *items, int count, uint32_t *selected
         }
         
         if (is_selected) {
-             Render_DrawRect(x + 2, item_y, w - 4, item_h - 2, 0.3f, 0.4f, 0.6f, 1.0f);
+             Render_DrawRect(x + 2, item_y, w - 4, item_h - 2, UI_COLOR_BG_ACTIVE[0], UI_COLOR_BG_ACTIVE[1], UI_COLOR_BG_ACTIVE[2], UI_COLOR_BG_ACTIVE[3]);
         } else if (hover) {
-             Render_DrawRect(x + 2, item_y, w - 4, item_h - 2, 0.25f, 0.25f, 0.3f, 1.0f);
+             Render_DrawRect(x + 2, item_y, w - 4, item_h - 2, UI_COLOR_BG_HOVER[0], UI_COLOR_BG_HOVER[1], UI_COLOR_BG_HOVER[2], UI_COLOR_BG_HOVER[3]);
         }
         
-        char display_text[64];
-        strncpy(display_text, items[i].name, sizeof(display_text) - 1);
-        display_text[sizeof(display_text) - 1] = '\0';
-        
-        int max_chars = (w - 20) / 12; 
-        if ((int)strlen(display_text) > max_chars && max_chars > 3) {
-            display_text[max_chars - 3] = '.';
-            display_text[max_chars - 2] = '.';
-            display_text[max_chars - 1] = '.';
-            display_text[max_chars] = '\0';
-        }
-        
-        Render_DrawText(display_text, x + 10, item_y + 6, 1.8f, 0.9f, 0.9f, 0.9f, 1.0f);
+        UI_DrawTruncatedText(items[i].name, x, item_y, w, item_h, false);
     }
     
     return changed;
@@ -574,16 +631,12 @@ void UI_DrawStreamStatus(int w, int h, float time, int frames_encoded,
 }
 
 bool UI_Dropdown(const char *id, AudioNodeInfo *items, int count, uint32_t *selected_id, int x, int y, int w, int h) {
-    if (ui.next_centered) {
-        x = (ui.window_width - ui.next_centered_w) / 2;
-        ui.next_centered = false;
-    }
+    UI_GetRect(&x, &y, w, h);
 
     bool is_open = (strcmp(ui.open_dropdown_id, id) == 0);
     bool just_opened = false;
     
-    bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
-                  ui.mouse_y >= y && ui.mouse_y <= y + h);
+    bool hover = UI_IsHovered(x, y, w, h);
     
     if (hover) {
         ui.next_cursor = OS_CURSOR_HAND;
@@ -606,15 +659,17 @@ bool UI_Dropdown(const char *id, AudioNodeInfo *items, int count, uint32_t *sele
         }
     }
     
-    float r = 0.19f; float g = 0.20f; float b = 0.27f; 
-    if (hover && ui.mouse_down) {
-        r = 0.35f; g = 0.36f; b = 0.44f; 
-    } else if (hover) {
-        r = 0.27f; g = 0.28f; b = 0.35f; 
+    UI_WidgetState state = UI_STATE_NORMAL;
+    if (hover) {
+        state = ui.mouse_down ? UI_STATE_ACTIVE : UI_STATE_HOVER;
     }
     
-    Render_DrawRoundedRect(x, y, w, h, 12.0f, r, g, b, 1.0f);
-    Render_DrawRoundedRect(x, y, w, h, 12.0f, 0.45f, 0.47f, 0.58f, 0.15f); 
+    UI_DrawWidgetBackground(x, y, w, h, state, UI_CORNER_RADIUS);
+    // Draw dropdown arrow background/overlay if needed, existing code had a secondary rect?
+    // Render_DrawRoundedRect(x, y, w, h, 12.0f, 0.45f, 0.47f, 0.58f, 0.15f); 
+    // This was an overlay. I will keep it or skip it? It looks like a "glass" headers effect.
+    // I'll keep it manual for now as it's specific.
+    Render_DrawRoundedRect(x, y, w, h, UI_CORNER_RADIUS, 0.45f, 0.47f, 0.58f, 0.15f); 
     
     const char *current_name = "Select Audio Source...";
     for (int i=0; i<count; ++i) {
@@ -624,18 +679,11 @@ bool UI_Dropdown(const char *id, AudioNodeInfo *items, int count, uint32_t *sele
         }
     }
     
-    char display_text[128];
-    strncpy(display_text, current_name, sizeof(display_text)-1);
-    
-    int max_chars = (w - 40) / 10; 
-    if ((int)strlen(display_text) > max_chars && max_chars > 3) {
-        display_text[max_chars - 3] = '.';
-        display_text[max_chars - 2] = '.';
-        display_text[max_chars - 1] = '.';
-        display_text[max_chars] = '\0';
-    }
-    
-    Render_DrawText(display_text, x + 15, y + (h/2) - 8, 1.8f, 0.80f, 0.84f, 0.96f, 1.0f);
+    // Draw text with truncation
+    // UI_DrawTruncatedText(current_name, x, y, w - 20, /*h?*/); 
+    // Pass w-30 to account for arrow
+    UI_DrawTruncatedText(current_name, x, y, w - 30, h, false);
+
     Render_DrawText("v", x + w - 30, y + (h/2) - 10, 1.5f, 0.71f, 0.75f, 1.0f, 1.0f);
 
     return just_opened; 

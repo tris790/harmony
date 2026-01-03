@@ -206,12 +206,12 @@ static void node_event_info(void *data, const struct pw_node_info *info) {
         
         if (is_app) {
             if (detail && detail[0] != '\0' && strcasecmp(main_label, detail) != 0) {
-                snprintf(node->name, sizeof(node->name), "[App] %s (%s)", main_label, detail);
+                snprintf(node->name, sizeof(node->name), "%s (%s)", main_label, detail);
             } else {
-                snprintf(node->name, sizeof(node->name), "[App] %s", main_label);
+                snprintf(node->name, sizeof(node->name), "%s", main_label);
             }
         } else {
-            snprintf(node->name, sizeof(node->name), "[Sys] %s", main_label);
+            snprintf(node->name, sizeof(node->name), "%s", main_label);
         }
     }
 }
@@ -225,6 +225,8 @@ static void registry_event_global(void *data, uint32_t id,
                                    uint32_t permissions, const char *type, uint32_t version,
                                    const struct spa_dict *props) {
     EnumContext *ctx = (EnumContext *)data;
+    (void)permissions;
+    (void)version;
     
     if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0) return;
     if (!props) return;
@@ -250,8 +252,8 @@ static void registry_event_global(void *data, uint32_t id,
         const char *node_desc = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
         const char *main_label = app_name ? app_name : (node_desc ? node_desc : (node_name ? node_name : "Unknown Node"));
         
-        if (is_app) snprintf(node->name, sizeof(node->name), "[App] %s", main_label);
-        else snprintf(node->name, sizeof(node->name), "[Sys] %s", main_label);
+        if (is_app) snprintf(node->name, sizeof(node->name), "%s", main_label);
+        else snprintf(node->name, sizeof(node->name), "%s", main_label);
 
         if (ctx->proxy_count < 128) {
             struct pw_node *proxy = pw_registry_bind(ctx->registry, id, type, PW_VERSION_NODE, 0);

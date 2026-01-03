@@ -27,6 +27,7 @@ struct CaptureContext {
     int32_t current_width;
     int32_t current_height;
     int32_t current_stride;
+    size_t data_capacity;
 };
 
 // ... on_process ... (keep existing)
@@ -89,10 +90,11 @@ static void on_process(void *data) {
     else if (ctx->current_frame.width != width || ctx->current_frame.height != height) need_alloc = true;
     
     if (need_alloc) {
-         // Reset pointers? We are in an Arena. We just push new memory.
-         // Note: This leaks previous frames in the Arena until app restart. 
-         // For production, we'd use a ring buffer or free-list.
-         ctx->current_frame.data[0] = ArenaPush(ctx->arena, height * packed_stride);
+         size_t required_size = height * packed_stride;
+         if (required_size > ctx->data_capacity) {
+             ctx->current_frame.data[0] = ArenaPush(ctx->arena, required_size);
+             ctx->data_capacity = required_size;
+         }
          ctx->current_frame.width = width;
          ctx->current_frame.height = height;
          ctx->current_frame.linesize[0] = packed_stride;
@@ -102,7 +104,7 @@ static void on_process(void *data) {
     
     // Copy Row-by-Row
     uint32_t src_stride = buf->datas[0].chunk->stride;
-    uint32_t copy_width = (packed_stride < src_stride) ? packed_stride : src_stride;
+    uint32_t copy_width = ((uint32_t)packed_stride < src_stride) ? (uint32_t)packed_stride : src_stride;
     uint8_t *src = buf->datas[0].data;
     uint8_t *dst = ctx->current_frame.data[0];
     

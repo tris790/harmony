@@ -54,7 +54,8 @@ static bool g_paste_requested = false;
 
 // --- Clipboard Copy State ---
 static struct wl_data_source *g_data_source = NULL;
-static char *g_clipboard_content = NULL; // Simple malloc/free for now or arena if we had persistent one
+static char *g_clipboard_content = NULL;
+static MemoryArena *g_wayland_arena = NULL;
 
 
 static int32_t g_repeat_rate = 0;
@@ -64,6 +65,9 @@ static double g_next_repeat_time = 0;
 
 // --- Data Device ---
 static void data_offer_offer(void *data, struct wl_data_offer *wl_data_offer, const char *mime_type) {
+    (void)data;
+    (void)wl_data_offer;
+    (void)mime_type;
     // We only care about text
 }
 
@@ -71,9 +75,14 @@ static const struct wl_data_offer_listener data_offer_listener = { .offer = data
 
 // --- Data Source (Copy) ---
 static void data_source_target(void *data, struct wl_data_source *wl_data_source, const char *mime_type) {
+    (void)data;
+    (void)wl_data_source;
+    (void)mime_type;
 }
 
 static void data_source_send(void *data, struct wl_data_source *wl_data_source, const char *mime_type, int32_t fd) {
+    (void)data;
+    (void)wl_data_source;
     if (g_clipboard_content && (strcmp(mime_type, "text/plain") == 0 || strcmp(mime_type, "text/plain;charset=utf-8") == 0)) {
         write(fd, g_clipboard_content, strlen(g_clipboard_content));
     }
@@ -81,13 +90,12 @@ static void data_source_send(void *data, struct wl_data_source *wl_data_source, 
 }
 
 static void data_source_cancelled(void *data, struct wl_data_source *wl_data_source) {
+    (void)data;
     if (g_data_source == wl_data_source) {
         wl_data_source_destroy(g_data_source);
         g_data_source = NULL;
-        if (g_clipboard_content) {
-             free(g_clipboard_content);
-             g_clipboard_content = NULL;
-        }
+        // g_clipboard_content belongs to arena, no need to free
+        g_clipboard_content = NULL;
     }
 }
 
@@ -102,9 +110,13 @@ static const struct wl_data_source_listener data_source_listener = {
 
 
 static void data_device_data_offer(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *offer) {
+    (void)data;
+    (void)wl_data_device;
     wl_data_offer_add_listener(offer, &data_offer_listener, NULL);
 }
 static void data_device_selection(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *offer) {
+    (void)data;
+    (void)wl_data_device;
     g_active_offer = offer;
 }
 static const struct wl_data_device_listener data_device_listener = {
@@ -129,6 +141,7 @@ struct WindowContext {
 
 // --- XDG Shell Listeners ---
 static void xdg_wm_base_ping(void *data, struct xdg_wm_base *xdg_wm_base, uint32_t serial) {
+    (void)data;
     xdg_wm_base_pong(xdg_wm_base, serial);
 }
 
@@ -148,6 +161,8 @@ static const struct xdg_surface_listener xdg_surface_listener = {
 
 static void xdg_toplevel_configure(void *data, struct xdg_toplevel *xdg_toplevel,
                                    int32_t width, int32_t height, struct wl_array *states) {
+    (void)xdg_toplevel;
+    (void)states;
     WindowContext *win = (WindowContext*)data;
     if (width > 0 && height > 0) {
         if (width != win->width || height != win->height) {
@@ -159,6 +174,7 @@ static void xdg_toplevel_configure(void *data, struct xdg_toplevel *xdg_toplevel
 }
 
 static void xdg_toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel) {
+    (void)xdg_toplevel;
     WindowContext *win = (WindowContext*)data;
     win->should_close = true;
 }
@@ -178,6 +194,10 @@ static char last_char = 0;
 static bool g_escape_pressed = false;
 
 static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_t format, int32_t fd, uint32_t size) {
+    (void)data;
+    (void)wl_keyboard;
+    (void)format;
+    (void)size;
     // We strictly need XKB common to map keys...
     // For "Handmade" MVP without xkbcommon dependency, we can't easily map raw scancodes to ASCII.
     // However, including xkbcommon is standard even for minimal Wayland.
@@ -189,16 +209,36 @@ static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_
 }
 
 static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {
+    (void)data;
+    (void)wl_keyboard;
+    (void)serial;
+    (void)surface;
+    (void)keys;
 }
 
 static void keyboard_leave(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, struct wl_surface *surface) {
+    (void)data;
+    (void)wl_keyboard;
+    (void)serial;
+    (void)surface;
 }
 
 static void keyboard_modifiers(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group) {
+    (void)data;
+    (void)wl_keyboard;
+    (void)serial;
+    (void)mods_depressed;
+    (void)mods_latched;
+    (void)mods_locked;
+    (void)group;
     // We'll use keyboard_key for modifier state as xkbcommon isn't used for raw scancodes here.
 }
 
 static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
+    (void)data;
+    (void)wl_keyboard;
+    (void)serial;
+    (void)time;
     bool pressed = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
     if (key == 29 || key == 97) g_ctrl_down = pressed; // Left Ctrl=29, Right Ctrl=97
 
@@ -248,6 +288,8 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t s
 }
 
 static void keyboard_repeat_info(void *data, struct wl_keyboard *wl_keyboard, int32_t rate, int32_t delay) {
+    (void)data;
+    (void)wl_keyboard;
     g_repeat_rate = rate;
     g_repeat_delay = delay;
 }
@@ -263,6 +305,9 @@ static const struct wl_keyboard_listener keyboard_listener = {
 
 // --- Pointer Listeners ---
 static void pointer_enter(void *data, struct wl_pointer *wl_pointer, uint32_t serial, struct wl_surface *surface, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+    (void)data;
+    (void)wl_pointer;
+    (void)surface;
     g_last_pointer_serial = serial;
     g_mouse_x = wl_fixed_to_double(surface_x);
     g_mouse_y = wl_fixed_to_double(surface_y);
@@ -272,14 +317,24 @@ static void pointer_enter(void *data, struct wl_pointer *wl_pointer, uint32_t se
 }
 
 static void pointer_leave(void *data, struct wl_pointer *wl_pointer, uint32_t serial, struct wl_surface *surface) {
+    (void)data;
+    (void)wl_pointer;
+    (void)serial;
+    (void)surface;
 }
 
 static void pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+    (void)data;
+    (void)wl_pointer;
+    (void)time;
     g_mouse_x = wl_fixed_to_double(surface_x);
     g_mouse_y = wl_fixed_to_double(surface_y);
 }
 
 static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+    (void)data;
+    (void)wl_pointer;
+    (void)time;
     g_last_pointer_serial = serial;
     if (button == BTN_LEFT) {
         g_mouse_left_down = (state == WL_POINTER_BUTTON_STATE_PRESSED);
@@ -287,6 +342,9 @@ static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t s
 }
 
 static void pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time, uint32_t axis, wl_fixed_t value) {
+    (void)data;
+    (void)wl_pointer;
+    (void)time;
     if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
         g_mouse_scroll_delta -= wl_fixed_to_double(value);
     }
@@ -301,6 +359,7 @@ static const struct wl_pointer_listener pointer_listener = {
 };
 
 static void seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
+    (void)data;
     bool has_pointer = capabilities & WL_SEAT_CAPABILITY_POINTER;
     bool has_keyboard = capabilities & WL_SEAT_CAPABILITY_KEYBOARD;
     
@@ -327,6 +386,7 @@ static const struct wl_seat_listener seat_listener = {
 // ... 
 
 char OS_GetLastChar(WindowContext *window) {
+    (void)window;
     char c = last_char;
     last_char = 0; // Consume
     return c;
@@ -342,6 +402,7 @@ bool OS_IsEscapePressed(void) {
 static void registry_handle_global(void *data, struct wl_registry *registry,
                                    uint32_t name, const char *interface, uint32_t version) {
     (void)data;
+    (void)version;
     if (strcmp(interface, wl_compositor_interface.name) == 0) {
         compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 4);
     } else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
@@ -360,6 +421,9 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
 }
 
 static void registry_handle_global_remove(void *data, struct wl_registry *registry, uint32_t name) {
+    (void)data;
+    (void)registry;
+    (void)name;
     // Handle removal
 }
 
@@ -372,6 +436,7 @@ static const struct wl_registry_listener registry_listener = {
 
 WindowContext* OS_CreateWindow(MemoryArena *arena, int width, int height, const char *title) {
     // 1. Connect Display
+    g_wayland_arena = arena;
     if (!display) {
         display = wl_display_connect(NULL);
         if (!display) {
@@ -483,6 +548,7 @@ WindowContext* OS_CreateWindow(MemoryArena *arena, int width, int height, const 
 }
 
 void OS_SetCursor(WindowContext *window, OS_CursorType type) {
+    (void)window;
     g_current_cursor_type = type;
     if (!g_pointer || !g_cursor_surface || type >= OS_CURSOR_COUNT) return;
 
@@ -555,12 +621,14 @@ void OS_GetWindowSize(WindowContext *window, int *width, int *height) {
 // --- Input ---
 
 void OS_GetMouseState(WindowContext *window, int *x, int *y, bool *left_down) {
+    (void)window;
     if (x) *x = (int)g_mouse_x;
     if (y) *y = (int)g_mouse_y;
     if (left_down) *left_down = g_mouse_left_down;
 }
 
 int OS_GetMouseScroll(WindowContext *window) {
+    (void)window;
     int scroll = 0;
     // Standard Wayland axis values are usually ~10 per "click"
     // We'll normalize this a bit for the UI.
@@ -602,13 +670,10 @@ const char* OS_GetClipboardText(MemoryArena *arena) {
 void OS_SetClipboardText(const char *text) {
     if (!data_device_manager || !seat) return;
 
-    if (g_clipboard_content) {
-        free(g_clipboard_content);
-        g_clipboard_content = NULL;
-    }
-
     if (text) {
-        g_clipboard_content = strdup(text);
+        size_t len = strlen(text);
+        g_clipboard_content = ArenaPush(g_wayland_arena, len + 1);
+        strcpy(g_clipboard_content, text);
         
         g_data_source = wl_data_device_manager_create_data_source(data_device_manager);
         wl_data_source_add_listener(g_data_source, &data_source_listener, NULL);

@@ -388,7 +388,6 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         }
         
         // Track frame timing
-        bool received_frame_this_tick = false;
         bool received_any_packet = false;  // For keepalive handling
         
         // 1. Receive Packets
@@ -471,10 +470,10 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                     EncodedPacket pkt = { .data = frame_data, .size = frame_size };
                     Codec_DecodePacket(decoder, &pkt, &decoded_frame);
 
-                    if (decoded_frame.width > 0) {
-                         received_frame_this_tick = true;
-                    }
-                    received_any_packet = true;
+                     if (decoded_frame.width > 0) {
+                         // Frame decoded
+                     }
+                     received_any_packet = true;
                 }
             }
         }

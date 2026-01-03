@@ -61,8 +61,10 @@ static GLuint CompileShader(GLenum type, const char *src) {
     return shader;
 }
 
+static MemoryArena *g_render_arena;
+
 void Render_Init(MemoryArena *arena) {
-    (void)arena;
+    g_render_arena = arena;
     
     GLuint vs = CompileShader(GL_VERTEX_SHADER, vs_source);
     GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fs_source);
@@ -264,7 +266,9 @@ static void InitUI() {
     // Font Texture
     int tex_w = 128;
     int tex_h = 64; // 16x8 grid of 8x8 chars
-    unsigned char *tex_data = calloc(tex_w * tex_h, 1);
+    
+    TemporaryMemory temp = BeginTemporaryMemory(g_render_arena);
+    unsigned char *tex_data = ArenaPushZero(g_render_arena, tex_w * tex_h);
     
     for (int c = 0; c < 128; c++) {
         int grid_x = c % 16;
@@ -286,7 +290,8 @@ static void InitUI() {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, tex_w, tex_h, 0, GL_ALPHA, GL_UNSIGNED_BYTE, tex_data);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    free(tex_data);
+    
+    EndTemporaryMemory(temp);
 }
 
 void Render_DrawRoundedRect(float x, float y, float w, float h, float rad, float r, float g, float b, float a) {
