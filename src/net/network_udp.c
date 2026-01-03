@@ -26,6 +26,17 @@ NetworkContext* Net_Init(MemoryArena *arena, int port, bool is_server) {
     int flags = fcntl(ctx->sockfd, F_GETFL, 0);
     fcntl(ctx->sockfd, F_SETFL, flags | O_NONBLOCK);
 
+    // Increase Socket Buffers to prevent drops during large keyframe bursts
+    int rcvbuf = 4 * 1024 * 1024; // 4MB
+    int sndbuf = 4 * 1024 * 1024; // 4MB
+    
+    if (setsockopt(ctx->sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+        perror("Net_Init: setsockopt SO_RCVBUF");
+    }
+    if (setsockopt(ctx->sockfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+        perror("Net_Init: setsockopt SO_SNDBUF");
+    }
+
     if (is_server) {
         struct sockaddr_in addr = {0};
         addr.sin_family = AF_INET;
@@ -37,7 +48,7 @@ NetworkContext* Net_Init(MemoryArena *arena, int port, bool is_server) {
             close(ctx->sockfd);
             return NULL;
         }
-        printf("Net: Bound to port %d\n", port);
+        printf("Net: Bound to port %d (RCVBUF: %d bytes)\n", port, rcvbuf);
     }
 
     return ctx;
