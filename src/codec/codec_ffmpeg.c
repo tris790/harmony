@@ -40,6 +40,11 @@ EncoderContext* Codec_InitEncoder(MemoryArena *arena, VideoFormat format) {
     // Optional: Tune for low latency
     av_opt_set(ctx->codec_ctx->priv_data, "preset", "ultrafast", 0);
     av_opt_set(ctx->codec_ctx->priv_data, "tune", "zerolatency", 0);
+    
+    // CRITICAL for network streaming: Insert SPS/PPS headers with every keyframe
+    // This ensures the decoder can recover if it misses the initial keyframe
+    // (common when viewer connects mid-stream or packets are lost over network)
+    av_opt_set_int(ctx->codec_ctx->priv_data, "repeat_headers", 1, 0);
 
     if (avcodec_open2(ctx->codec_ctx, codec, NULL) < 0) {
         fprintf(stderr, "Codec_InitEncoder: Could not open codec\n");
