@@ -850,7 +850,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip,
     } else {
       OS_MutexUnlock(frame_mutex);
       Render_Clear(0.1f, 0.1f, 0.1f, 1.0f);
-      const char *wait_msg = "Waiting for stream (Multi-Threaded)...";
+      const char *wait_msg = "Waiting for stream...";
       float tw = Render_GetTextWidth(wait_msg, 2.0f);
       Render_DrawText(wait_msg, (win_w - tw) / 2.0f, win_h / 2.0f, 2.0f, 0.8f,
                       0.8f, 0.8f, 1.0f);
