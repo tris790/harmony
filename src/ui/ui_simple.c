@@ -215,6 +215,7 @@ void UI_EndFrame() {
             }
         }
     }
+    OS_SetCursor(NULL, ui.next_cursor);
 }
 
 bool UI_Button(const char *text, int x, int y, int w, int h) {
