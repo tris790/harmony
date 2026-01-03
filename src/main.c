@@ -706,7 +706,9 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   // Stop Worker Threads
   encoder_ctx.running = false;
   audio_ctx.running = false;
-  Queue_Push(encoder_ctx.frame_queue, NULL); // Unblock encoder thread
+  
+  // Signal encoder queue to shutdown - unblocks encoder thread waiting on Queue_Pop
+  Queue_Shutdown(encoder_ctx.frame_queue);
 
   OS_ThreadJoin(encoder_thread);
   OS_ThreadJoin(audio_thread);
@@ -861,14 +863,20 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip,
   net_ctx.running = false;
   decoder_ctx.running = false;
   audio_decoder_ctx.running = false;
-  Queue_Push(video_queue, NULL);
-  Queue_Push(audio_queue, NULL);
+  
+  // Signal queues to shutdown - this unblocks threads waiting on Queue_Pop
+  Queue_Shutdown(video_queue);
+  Queue_Shutdown(audio_queue);
 
   OS_ThreadJoin(net_thread);
   OS_ThreadJoin(decoder_thread);
   OS_ThreadJoin(audio_decoder_thread);
 
-  // Cleanup
+  // Cleanup queues (must be after threads are joined)
+  Queue_Destroy(video_queue);
+  Queue_Destroy(audio_queue);
+  
+  // Cleanup other resources
   OS_MutexDestroy(meta_mutex);
   OS_MutexDestroy(stats_mutex);
   OS_MutexDestroy(frame_mutex);

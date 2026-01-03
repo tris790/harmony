@@ -4,6 +4,7 @@
 #include "../os_api.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 typedef struct Node {
     void *data;
@@ -16,6 +17,7 @@ typedef struct Queue {
     OS_Mutex *mutex;
     OS_Semaphore *sem;
     int count;
+    atomic_bool shutdown;
 } Queue;
 
 static inline Queue* Queue_Create(void) {
@@ -24,6 +26,7 @@ static inline Queue* Queue_Create(void) {
     q->mutex = OS_MutexCreate();
     q->sem = OS_SemaphoreCreate(0);
     q->count = 0;
+    atomic_store(&q->shutdown, false);
     return q;
 }
 
@@ -46,7 +49,18 @@ static inline void Queue_Push(Queue *q, void *data) {
 
 static inline void* Queue_Pop(Queue *q) {
     OS_SemaphoreWait(q->sem);
+    
+    // Check shutdown after waking from semaphore
+    if (atomic_load(&q->shutdown)) {
+        return NULL;
+    }
+    
     OS_MutexLock(q->mutex);
+    if (q->head == NULL) {
+        // Spurious wakeup or shutdown race
+        OS_MutexUnlock(q->mutex);
+        return NULL;
+    }
     Node *node = q->head;
     void *data = node->data;
     q->head = node->next;
@@ -59,8 +73,20 @@ static inline void* Queue_Pop(Queue *q) {
     return data;
 }
 
+// Signal shutdown and wake all waiting threads
+static inline void Queue_Shutdown(Queue *q) {
+    if (!q) return;
+    atomic_store(&q->shutdown, true);
+    // Post semaphore multiple times to wake any waiting threads
+    for (int i = 0; i < 8; i++) {
+        OS_SemaphorePost(q->sem);
+    }
+}
+
 static inline void Queue_Destroy(Queue *q) {
     if (!q) return;
+    // Ensure shutdown is signaled
+    Queue_Shutdown(q);
     // Note: This doesn't free the data in nodes, just the nodes themselves
     while (q->head) {
         Node *next = q->head->next;
