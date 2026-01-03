@@ -4,6 +4,7 @@
 struct DecoderContext {
     AVCodecContext *codec_ctx;
     AVFrame *frame_yuv;
+    bool has_received_keyframe;  // Track if we've seen a keyframe with SPS/PPS
 };
 
 DecoderContext* Codec_InitDecoder(MemoryArena *arena) {
@@ -30,7 +31,45 @@ DecoderContext* Codec_InitDecoder(MemoryArena *arena) {
     return ctx;
 }
 
+// Helper function to check if H.264 packet contains a keyframe (SPS/PPS/IDR)
+// This scans for NAL unit types in the bitstream
+static bool Codec_IsKeyframe(uint8_t *data, size_t size) {
+    if (size < 4) return false;
+    
+    // Look for NAL start codes (0x00 0x00 0x01 or 0x00 0x00 0x00 0x01)
+    // and check NAL unit types
+    for (size_t i = 0; i + 4 < size; i++) {
+        bool start_code_3 = (data[i] == 0 && data[i+1] == 0 && data[i+2] == 1);
+        bool start_code_4 = (i + 5 < size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1);
+        
+        if (start_code_3 || start_code_4) {
+            size_t nal_offset = start_code_4 ? i + 4 : i + 3;
+            if (nal_offset < size) {
+                uint8_t nal_type = data[nal_offset] & 0x1F;
+                // NAL types: 5=IDR, 7=SPS, 8=PPS
+                if (nal_type == 5 || nal_type == 7 || nal_type == 8) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 void Codec_DecodePacket(DecoderContext *ctx, EncodedPacket *packet, VideoFrame *out_frame) {
+    // Check if this packet contains a keyframe (SPS/PPS/IDR)
+    bool is_keyframe = Codec_IsKeyframe(packet->data, packet->size);
+    
+    if (is_keyframe) {
+        ctx->has_received_keyframe = true;
+    }
+    
+    // Don't decode until we've received a keyframe - prevents "non-existing PPS" errors
+    if (!ctx->has_received_keyframe) {
+        // Silently skip - we're waiting for a keyframe to sync
+        return;
+    }
+    
     AVPacket *av_pkt = av_packet_alloc();
     // Wrap our data in an AVPacket
     // Warning: av_packet_from_data might take ownership? cleaner to just manually set
@@ -70,3 +109,4 @@ void Codec_DecodePacket(DecoderContext *ctx, EncodedPacket *packet, VideoFrame *
     av_pkt->data = NULL;
     av_packet_free(&av_pkt);
 }
+

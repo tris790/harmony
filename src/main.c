@@ -128,14 +128,38 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
                     if (hdr->packet_type == PACKET_TYPE_PUNCH) {
                         // Viewer is sending punch packets - update our target to their source address
                         if (!has_viewer || strcmp(viewer_ip, incoming_ip) != 0) {
+                            bool is_new_viewer = !has_viewer;
                             strncpy(viewer_ip, incoming_ip, sizeof(viewer_ip) - 1);
                             has_viewer = true;
                             net_cb.dest_ip = viewer_ip;
-                            printf("Host: Received punch from %s, sending to %s:%d\n", incoming_ip, viewer_ip, viewer_port);
+                            printf("Host: Viewer connected from %s:%d - starting stream\n", incoming_ip, incoming_port);
+                            
+                            // Force keyframe for new viewer by re-initializing encoder
+                            // This ensures the first frame they receive has SPS/PPS
+                            if (is_new_viewer && encoder) {
+                                printf("Host: Re-initializing encoder to send fresh keyframe\n");
+                                Codec_CloseEncoder(encoder);
+                                encoder = Codec_InitEncoder(arena, vfmt);
+                            }
                         }
                     }
                 }
             }
+        }
+        
+        // Only send data when we have a confirmed viewer (after UDP punch)
+        if (!has_viewer) {
+            // Still waiting for viewer - just poll capture to keep it active
+            Capture_Poll(capture);
+            Capture_GetFrame(capture); // Discard frames while waiting
+            
+            // Draw waiting UI
+            Render_DrawRect(0, 0, w, h, 0.1f, 0.1f, 0.15f, 1.0f);
+            char wait_msg[128];
+            snprintf(wait_msg, sizeof(wait_msg), "Waiting for viewer at %s:9999...", target_ip);
+            Render_DrawText(wait_msg, w/2 - 200, h/2, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
+            OS_SwapBuffers(window);
+            continue;
         }
         
         // Send Metadata periodically (every ~1 sec)
