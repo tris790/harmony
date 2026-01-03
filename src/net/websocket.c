@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <errno.h>
 
 #define MAX_CLIENTS 10
@@ -165,6 +166,11 @@ void WS_Poll(WebSocketContext *ctx) {
                 ctx->clients[i].sockfd = new_fd;
                 ctx->clients[i].active = true;
                 ctx->clients[i].handshake_complete = false;
+                
+                // Increase send buffer for video frames (e.g. 1MB)
+                int sndbuf = 1024 * 1024;
+                setsockopt(new_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+                
                 printf("WS: New connection [%d]\n", i);
                 break;
             }
@@ -232,8 +238,28 @@ void WS_Broadcast(WebSocketContext *ctx, const void *data, size_t size) {
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (ctx->clients[i].active && ctx->clients[i].handshake_complete) {
-            send(ctx->clients[i].sockfd, header, header_len, MSG_NOSIGNAL);
-            send(ctx->clients[i].sockfd, data, size, MSG_NOSIGNAL);
+            struct iovec iov[2];
+            iov[0].iov_base = header;
+            iov[0].iov_len = header_len;
+            iov[1].iov_base = (void*)data;
+            iov[1].iov_len = size;
+
+            ssize_t total_expected = header_len + size;
+            ssize_t n = writev(ctx->clients[i].sockfd, iov, 2);
+            
+            if (n < total_expected) {
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    // Buffer full - Real-time stream: skip frame or disconnect? 
+                    // Better to disconnect as protocol state is now unknown if partial 
+                    // (although writev is more 'atomic' at the system call level, 
+                    // it doesn't guarantee the whole amount is sent if the pipe is full).
+                    printf("WS: Send buffer full, disconnecting client [%d]\n", i);
+                } else {
+                    printf("WS: Write error or partial write (%zd/%zd), disconnecting [%d]\n", n, total_expected, i);
+                }
+                close(ctx->clients[i].sockfd);
+                ctx->clients[i].active = false;
+            }
         }
     }
 }
