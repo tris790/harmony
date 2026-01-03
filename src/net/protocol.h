@@ -13,7 +13,8 @@
 typedef enum PacketType {
     PACKET_TYPE_VIDEO = 0,
     PACKET_TYPE_METADATA = 1,
-    PACKET_TYPE_KEEPALIVE = 2
+    PACKET_TYPE_KEEPALIVE = 2,
+    PACKET_TYPE_PUNCH = 3       // UDP hole punch packet
 } PacketType;
 
 typedef struct PacketHeader {
@@ -96,6 +97,23 @@ static void Protocol_SendKeepalive(Packetizer *pz, SendPacketCallback send_fn, v
     header->total_chunks = 1;
     header->payload_size = 0;  // No payload
     header->packet_type = PACKET_TYPE_KEEPALIVE;
+    memset(header->padding, 0, 3);
+    
+    send_fn(user_data, buffer, sizeof(PacketHeader));
+}
+
+// Send a UDP hole punch packet (opens firewall for return traffic)
+static void Protocol_SendPunch(Packetizer *pz, SendPacketCallback send_fn, void *user_data) {
+    pz->frame_id_counter++;
+    
+    uint8_t buffer[sizeof(PacketHeader)];
+    PacketHeader *header = (PacketHeader *)buffer;
+    
+    header->frame_id = pz->frame_id_counter;
+    header->chunk_id = 0;
+    header->total_chunks = 1;
+    header->payload_size = 0;  // No payload
+    header->packet_type = PACKET_TYPE_PUNCH;
     memset(header->padding, 0, 3);
     
     send_fn(user_data, buffer, sizeof(PacketHeader));
