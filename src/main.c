@@ -412,7 +412,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
             }
             
             if (res == RESULT_COMPLETE) {
-                printf("Viewer: Got COMPLETE packet type=%d size=%zu\n", packet_type, frame_size);
+
                 if (packet_type == PACKET_TYPE_AUDIO) {
                     // Decode and play audio
                     if (audio_decoder && audio_playback) {
@@ -425,10 +425,10 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                     received_any_packet = true;
                 } else if (packet_type == PACKET_TYPE_VIDEO) {
                     // Decode video
-                    printf("Viewer: Decoding VIDEO frame size=%zu\n", frame_size);
+
                     EncodedPacket pkt = { .data = frame_data, .size = frame_size };
                     Codec_DecodePacket(decoder, &pkt, &decoded_frame);
-                    printf("Viewer: Decoded frame %dx%d\n", decoded_frame.width, decoded_frame.height);
+
                     received_frame_this_tick = true;
                     received_any_packet = true;
                     
