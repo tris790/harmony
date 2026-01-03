@@ -322,8 +322,18 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                 EncodedAudio encoded_audio = {0};
                 Audio_Encode(audio_encoder, aframe, &encoded_audio);
                 if (encoded_audio.size > 0) {
+                    uint32_t current_audio_id = packetizer.frame_id_counter + 1;
+
+                    // Encrypt audio if enabled
+                    if (encryption_enabled) {
+                        uint8_t iv[16] = {0};
+                        uint32_t net_id = htonl(current_audio_id);
+                        memcpy(iv, &net_id, 4);
+                        AES_CTR_Xcrypt(&aes_ctx, iv, encoded_audio.data, encoded_audio.size);
+                    }
+
                     Protocol_SendAudio(&packetizer, encoded_audio.data, encoded_audio.size, Net_SendPacketCallback, &net_cb);
-                    WS_Broadcast(ws, PACKET_TYPE_AUDIO, packetizer.frame_id_counter, encoded_audio.data, encoded_audio.size);
+                    WS_Broadcast(ws, PACKET_TYPE_AUDIO, current_audio_id, encoded_audio.data, encoded_audio.size);
                 }
             }
         }
@@ -569,6 +579,14 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
             if (res == RESULT_COMPLETE) {
 
                 if (packet_type == PACKET_TYPE_AUDIO) {
+                    // Decrypt if needed
+                    if (encryption_enabled) {
+                        uint8_t iv[16] = {0};
+                        uint32_t net_id = htonl(audio_reassembler.active_buffer.frame_id);
+                        memcpy(iv, &net_id, 4);
+                        AES_CTR_Xcrypt(&aes_ctx, iv, (uint8_t*)frame_data, frame_size);
+                    }
+
                     // Decode and play audio
                     if (audio_decoder && audio_playback) {
                         AudioFrame audio_frame = {0};
