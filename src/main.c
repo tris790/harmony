@@ -545,8 +545,6 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
 
     return result;
 }
-    return 0;
-}
 
 // --- MENU ---
 typedef struct AppConfig {
