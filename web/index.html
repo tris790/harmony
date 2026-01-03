@@ -305,9 +305,9 @@
         let cryptoKey = null;
 
         // JMuxer instance
-        const jmuxer = new JMuxer({
+        let jmuxer = new JMuxer({
             node: 'player',
-            mode: 'both',
+            mode: 'video',
             flushingTime: 0,
             maxDelay: 100,
             clearBuffer: true,
@@ -354,8 +354,10 @@
             const password = passInput.value.trim();
             if (password) {
                 cryptoKey = await deriveKey(password);
+                console.log('Encryption key derived.');
             } else {
                 cryptoKey = null;
+                console.log('No encryption key.');
             }
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -370,58 +372,60 @@
             ws.binaryType = 'arraybuffer';
 
             let messageQueue = Promise.resolve();
+            let videoPackets = 0;
+            let audioPackets = 0;
 
             ws.onopen = () => {
                 console.log('Connected to WebSocket Server');
                 statusDiv.classList.add('connected');
                 statusText.innerText = `Connected to ${targetHost}`;
-                // Keep STATE_WAITING until first frame
             };
 
             ws.onmessage = (event) => {
-                // Sequential processing to avoid out-of-order issues from async decryption
+                const rawData = new Uint8Array(event.data);
                 messageQueue = messageQueue.then(async () => {
-                    let data = new Uint8Array(event.data);
+                    try {
+                        let data = rawData;
+                        if (data.length < 5) {
+                            console.warn(`Short packet received: ${data.length} bytes`);
+                            return;
+                        }
 
-                    // Prepend 4 bytes for frame_id, 1 byte for type
-                    if (data.length < 5) return;
+                        const frameIdBytes = data.slice(0, 4);
+                        const packetType = data[4];
+                        const actualData = data.subarray(5);
 
-                    const frameIdBytes = data.slice(0, 4);
-                    const packetType = data[4];
-                    const actualData = data.slice(5);
+                        let decryptedData = actualData;
+                        if (cryptoKey && packetType === 0) {
+                            const iv = new Uint8Array(16);
+                            iv.set(frameIdBytes, 0);
 
-                    let decryptedData = actualData;
-                    if (cryptoKey && packetType === 0) { // Only decrypt VIDEO (0)
-                        const iv = new Uint8Array(16);
-                        iv.set(frameIdBytes, 0); // frame_id is big-endian from C (htonl)
-
-                        try {
                             const decryptedBuffer = await crypto.subtle.decrypt(
-                                {
-                                    name: 'AES-CTR',
-                                    counter: iv,
-                                    length: 64
-                                },
+                                { name: 'AES-CTR', counter: iv, length: 64 },
                                 cryptoKey,
                                 actualData
                             );
                             decryptedData = new Uint8Array(decryptedBuffer);
-                        } catch (e) {
-                            console.error('Decryption failed', e);
-                            return;
                         }
-                    }
 
-                    if (!frameReceived && packetType === 0) {
-                        console.log('First video frame received! Transitioning to streaming.');
-                        frameReceived = true;
-                        setState(STATE_STREAMING);
-                    }
+                        if (packetType === 0) {
+                            videoPackets++;
+                            if (!frameReceived) {
+                                console.log('First video frame received!');
+                                frameReceived = true;
+                                setState(STATE_STREAMING);
+                            }
+                            jmuxer.feed({ video: decryptedData });
+                        } else if (packetType === 4) {
+                            audioPackets++;
+                            // Audio disabled in jmuxer for now to debug video
+                        }
 
-                    if (packetType === 0) {
-                        jmuxer.feed({ video: decryptedData });
-                    } else if (packetType === 4) {
-                        jmuxer.feed({ audio: decryptedData });
+                        if (videoPackets > 0 && videoPackets % 60 === 0) {
+                            console.log(`Stats: Video=${videoPackets}, Audio=${audioPackets}`);
+                        }
+                    } catch (e) {
+                        console.error('Processing error:', e);
                     }
                 });
             };
