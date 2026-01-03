@@ -84,15 +84,20 @@ uint32_t Portal_RequestScreenCast() {
     const char *portal_obj_path = "/org/freedesktop/portal/desktop";
     const char *screencast_iface = "org.freedesktop.portal.ScreenCast";
     
+    // Use a unique session token each time (prevents conflicts when restarting)
+    static int session_counter = 0;
+    char session_token[64];
+    snprintf(session_token, sizeof(session_token), "harmony_session_%d", session_counter++);
+    
     // 1. CreateSession
     DBusMessage *msg = dbus_message_new_method_call(portal_bus_name, portal_obj_path, screencast_iface, "CreateSession");
     DBusMessageIter args, array;
     dbus_message_iter_init_append(msg, &args);
     dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &array);
     
-    // Add "session_handle_token" -> "harmony_token"
+    // Add "session_handle_token" -> unique token
     const char *key = "session_handle_token";
-    const char *value = "harmony_token";
+    const char *value = session_token;
     DBusMessageIter dict, val;
     dbus_message_iter_open_container(&array, DBUS_TYPE_DICT_ENTRY, NULL, &dict);
     dbus_message_iter_append_basic(&dict, DBUS_TYPE_STRING, &key);

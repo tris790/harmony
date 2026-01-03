@@ -18,7 +18,8 @@ void MockSendCallback(void *user_data, void *packet_data, size_t packet_size) {
     // Feed directly to receiver
     void *frame_out = NULL;
     size_t size_out = 0;
-    ReassemblyResult res = Protocol_HandlePacket(net->receiver, packet_data, packet_size, &frame_out, &size_out);
+    uint8_t packet_type = 0;
+    ReassemblyResult res = Protocol_HandlePacket(net->receiver, packet_data, packet_size, &frame_out, &size_out, &packet_type);
     
     if (res == RESULT_COMPLETE) {
         printf("MockNet: Frame Reassembled! Size: %zu\n", size_out);

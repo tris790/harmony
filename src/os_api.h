@@ -32,4 +32,7 @@ void OS_GetMouseState(WindowContext *window, int *x, int *y, bool *left_down);
 // Very basic input handling for MVP.
 char OS_GetLastChar(WindowContext *window);
 
+// Returns true if ESC was pressed (consumes the press)
+bool OS_IsEscapePressed(void);
+
 #endif // HARMONY_OS_API_H

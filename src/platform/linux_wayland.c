@@ -86,6 +86,7 @@ static const struct wl_pointer_listener pointer_listener;
 // --- Keyboard ---
 struct wl_keyboard *keyboard;
 static char last_char = 0;
+static bool g_escape_pressed = false;
 
 static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_t format, int32_t fd, uint32_t size) {
     // We strictly need XKB common to map keys...
@@ -108,12 +109,19 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t s
     if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
         // Simple QWERTY scancode map (offset by 8 in Linux/X11 usually, but Wayland gives evdev codes)
         // Evdev codes:
+        // 1: ESC
         // 2-11: 1234567890
         // 12: -
         // 13: =
         // 14: BS
         // 16-25: QWERTYUIOP
         // 52: .
+        
+        // ESC key handling
+        if (key == 1) {
+            g_escape_pressed = true;
+            return;
+        }
         
         // This is extremely hacky but fits "Handmade" minimal scope for just typing an IP.
         char c = 0;
@@ -197,6 +205,12 @@ char OS_GetLastChar(WindowContext *window) {
     char c = last_char;
     last_char = 0; // Consume
     return c;
+}
+
+bool OS_IsEscapePressed(void) {
+    bool pressed = g_escape_pressed;
+    g_escape_pressed = false; // Consume
+    return pressed;
 }
 
 // --- Registry Listener ---

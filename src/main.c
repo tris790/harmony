@@ -35,6 +35,9 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
     MemoryArena packet_arena;
     ArenaInit(&packet_arena, 32 * 1024 * 1024);
 
+    // Initialize the renderer for status UI
+    Render_Init(arena);
+
     // Request Screen Share Permissions
     printf("Requesting Screen Share... Please acknowledge dialog.\n");
     uint32_t node_id = Portal_RequestScreenCast();
@@ -66,7 +69,29 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
     strcpy(metadata.color_space, "sRGB");
 
     int frame_count = 0;
+    int frames_encoded = 0;
+    float elapsed_time = 0.0f;
+    bool has_started_capturing = false; // Persistent flag - once true, stays true
+    
+    // Keepalive tracking
+    float time_since_last_send = 0.0f;
+    const float KEEPALIVE_INTERVAL = 0.5f; // Send keepalive every 500ms if no frames
+    
     while (OS_ProcessEvents(window)) {
+        // Check for ESC to return to menu
+        if (OS_IsEscapePressed()) {
+            printf("Host: ESC pressed, returning to menu.\n");
+            return 2; // Return to menu
+        }
+        
+        // Get window size for UI
+        int w = 1280, h = 720;
+        OS_GetWindowSize(window, &w, &h);
+        Render_SetScreenSize(w, h);
+        
+        // Update elapsed time for animations (~30fps assumed)
+        elapsed_time += 1.0f / 30.0f;
+        
         // Send Metadata periodically (every ~1 sec)
         if (frame_count % 30 == 0) {
              Protocol_SendMetadata(&packetizer, &metadata, Net_SendPacketCallback, &net_cb);
@@ -76,8 +101,9 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
         
         VideoFrame *frame = Capture_GetFrame(capture);
         if (frame) {
+            has_started_capturing = true; // Once we get a frame, we're capturing
+            
             // Check for resolution change
-            // Check for resolution change (or if encoder is missing)
             // Ensure dimensions are even for H.264
             int safe_width = frame->width & ~1;
             int safe_height = frame->height & ~1;
@@ -111,13 +137,29 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
                 EncodedPacket pkt = {0};
                 Codec_EncodeFrame(encoder, frame, &packet_arena, &pkt);
             
-            if (pkt.size > 0) {
-                Protocol_SendFrame(&packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
-                if (frame_count++ % 30 == 0) printf("Host: Sent Frame %d (%zu bytes)\n", frame_count, pkt.size);
+                if (pkt.size > 0) {
+                    Protocol_SendFrame(&packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
+                    frames_encoded++;
+                    time_since_last_send = 0.0f; // Reset keepalive timer
+                    if (frame_count++ % 30 == 0) printf("Host: Sent Frame %d (%zu bytes)\n", frames_encoded, pkt.size);
+                }
+            }
+        } else {
+            // No frame captured - track time for keepalive
+            time_since_last_send += 1.0f / 30.0f;
+            
+            // Send keepalive if we've been idle for too long
+            if (has_started_capturing && time_since_last_send > KEEPALIVE_INTERVAL) {
+                Protocol_SendKeepalive(&packetizer, Net_SendPacketCallback, &net_cb);
+                time_since_last_send = 0.0f;
             }
         }
-        }
-        OS_SwapBuffers(window); // Just to keep window alive/responsive
+        
+        // Draw streaming status UI (prevents flickering, provides feedback)
+        UI_DrawStreamStatus(w, h, elapsed_time, frames_encoded, 
+                           target_ip, vfmt.width, vfmt.height, has_started_capturing);
+        
+        OS_SwapBuffers(window);
     }
     return 0;
 }
@@ -139,14 +181,6 @@ int RunViewer(MemoryArena *arena, WindowContext *window) {
     Render_Init(arena);
     
     // Reassembler Setup
-    // Ensure Reassembler struct is fully usable. 
-    // In protocol.h it is: typedef struct Reassembler { void *buffer; size_t buffer_size; ... } Reassembler;
-    // We need to alloc the buffer manually as per previous attempt (which failed accessing member??)
-    // Wait, let's look at protocol.h again.
-    // It seems Reassembler struct has 'buffer' and 'capacity' or similar. 
-    // Protocol_HandlePacket(&reassembler, packet, size, &out_frame, &out_size) returns REASSEMBLY_COMPLETE
-    
-    // Reassembler Setup
     Reassembler reassembler;
     Reassembler_Init(&reassembler, arena);
     
@@ -155,7 +189,20 @@ int RunViewer(MemoryArena *arena, WindowContext *window) {
     StreamMetadata stream_meta = {0};
     
     int frames_decoded = 0;
+    float time_since_last_frame = 0.0f;
+    const float STREAM_TIMEOUT = 2.0f; // Reset after 2 seconds of no frames
+    
     while (OS_ProcessEvents(window)) {
+        // Check for ESC to return to menu
+        if (OS_IsEscapePressed()) {
+            printf("Viewer: ESC pressed, returning to menu.\n");
+            return 2; // Return to menu
+        }
+        
+        // Track frame timing
+        bool received_frame_this_tick = false;
+        bool received_any_packet = false;  // For keepalive handling
+        
         // 1. Receive Packets
         uint8_t buf[2048]; 
         char sender_ip[INET_ADDRSTRLEN];
@@ -170,16 +217,22 @@ int RunViewer(MemoryArena *arena, WindowContext *window) {
             ReassemblyResult res = Protocol_HandlePacket(&reassembler, buf, n, &frame_data, &frame_size, &packet_type);
             
             if (res == RESULT_COMPLETE) {
-                if (packet_type == PACKET_TYPE_METADATA) {
+                if (packet_type == PACKET_TYPE_KEEPALIVE) {
+                    // Keepalive received - just reset timeout, don't decode anything
+                    received_any_packet = true;
+                } else if (packet_type == PACKET_TYPE_METADATA) {
                      if (frame_size == sizeof(StreamMetadata)) {
                          memcpy(&stream_meta, frame_data, sizeof(StreamMetadata));
                      }
+                     received_any_packet = true;
                 } else {
                     // 2. Decode
                     EncodedPacket pkt = { .data = frame_data, .size = frame_size };
                     
                     // Decode directly
                     Codec_DecodePacket(decoder, &pkt, &decoded_frame);
+                    received_frame_this_tick = true;
+                    received_any_packet = true;
                     
                     // Log frame info periodically
                     if (decoded_frame.width > 0 && decoded_frame.height > 0) {
@@ -192,7 +245,24 @@ int RunViewer(MemoryArena *arena, WindowContext *window) {
             }
         }
         
-        // Always draw the latest frame (or waiting screen)
+        // Update timeout tracking - reset on ANY packet (including keepalive)
+        if (received_any_packet) {
+            time_since_last_frame = 0.0f;
+        } else {
+            time_since_last_frame += 1.0f / 30.0f; // Approximate frame time
+        }
+        
+        // Reset to waiting state if stream timed out
+        if (time_since_last_frame > STREAM_TIMEOUT && decoded_frame.width > 0) {
+            printf("Viewer: Stream timeout, waiting for reconnection...\n");
+            decoded_frame.width = 0;
+            decoded_frame.height = 0;
+            stream_meta.screen_width = 0; // Clear metadata too
+            
+            // Reset reassembler so it can accept new stream (which starts at frame_id 1)
+            reassembler.active_buffer.frame_id = 0;
+        }
+        
         // Always draw the latest frame (or waiting screen)
         int win_w = 1280, win_h = 720;
         OS_GetWindowSize(window, &win_w, &win_h);
@@ -328,16 +398,31 @@ int main(int argc, char **argv) {
     } else if (argc > 1 && strcmp(argv[1], "host") == 0) {
         config.is_host = true;
         config.start_app = true;
-    } else {
-        // Show Menu
-        RunMenu(&main_arena, window, &config);
     }
     
-    if (config.start_app) {
-        if (config.is_host) {
-            return RunHost(&main_arena, window, config.target_ip);
+    // Main application loop - allows returning to menu
+    while (1) {
+        if (!config.start_app) {
+            // Show Menu
+            RunMenu(&main_arena, window, &config);
+        }
+        
+        if (config.start_app) {
+            int result;
+            if (config.is_host) {
+                result = RunHost(&main_arena, window, config.target_ip);
+            } else {
+                result = RunViewer(&main_arena, window);
+            }
+            
+            // result == 2 means return to menu (ESC pressed)
+            if (result == 2) {
+                config.start_app = false; // Go back to menu
+                continue;
+            }
+            return result;
         } else {
-            return RunViewer(&main_arena, window);
+            break; // Menu closed without starting
         }
     }
     

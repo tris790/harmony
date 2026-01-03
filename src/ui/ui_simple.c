@@ -2,6 +2,7 @@
 #include "render_api.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 typedef struct UIContext {
     int mouse_x;
@@ -155,4 +156,80 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
     }
     
     return changed;
+}
+
+// Draw a pulsing recording indicator (red circle that pulses)
+void UI_DrawRecordingIndicator(int x, int y, float time) {
+    // Pulse effect: sin wave oscillates alpha between 0.6 and 1.0
+    float pulse = 0.7f + 0.3f * sinf(time * 4.0f); // ~4 pulses per second
+    
+    // Draw outer glow (subtle)
+    float glow_size = 16.0f + 4.0f * sinf(time * 4.0f);
+    Render_DrawRoundedRect(x - glow_size/2, y - glow_size/2, glow_size, glow_size, glow_size/2, 
+                           0.9f, 0.2f, 0.2f, pulse * 0.3f);
+    
+    // Draw main red circle
+    Render_DrawRoundedRect(x - 8, y - 8, 16, 16, 8.0f, 
+                           0.9f, 0.2f, 0.2f, pulse);
+}
+
+// Draw complete stream status UI
+void UI_DrawStreamStatus(int w, int h, float time, int frames_encoded, 
+                         const char *target_ip, int res_w, int res_h, 
+                         bool is_capturing) {
+    // Draw dark background - prevents flickering
+    // Mocha Base: #1e1e2e
+    Render_DrawRect(0, 0, w, h, 0.12f, 0.12f, 0.18f, 1.0f);
+    
+    int cx = w / 2;
+    int cy = h / 2;
+    
+    // Status Container (centered card)
+    int card_w = 500;
+    int card_h = 300;
+    int card_x = cx - card_w / 2;
+    int card_y = cy - card_h / 2;
+    
+    // Card background (slightly lighter)
+    Render_DrawRoundedRect(card_x, card_y, card_w, card_h, 16.0f, 
+                           0.16f, 0.16f, 0.22f, 1.0f);
+    
+    // Recording indicator + Status text
+    int indicator_x = card_x + 60;
+    int status_y = card_y + 50;
+    
+    UI_DrawRecordingIndicator(indicator_x, status_y + 8, time);
+    
+    // Status text
+    if (is_capturing) {
+        // Greenish: STREAMING LIVE
+        Render_DrawText("STREAMING LIVE", indicator_x + 30, status_y, 2.5f, 
+                        0.65f, 0.89f, 0.63f, 1.0f);
+    } else {
+        // Yellow: Waiting for capture
+        Render_DrawText("Waiting for capture...", indicator_x + 30, status_y, 2.0f, 
+                        0.98f, 0.84f, 0.48f, 1.0f);
+    }
+    
+    // Details section
+    int details_y = card_y + 110;
+    char buf[128];
+    
+    // Target IP
+    snprintf(buf, sizeof(buf), "Target: %s", target_ip);
+    Render_DrawText(buf, card_x + 40, details_y, 2.0f, 0.8f, 0.84f, 0.96f, 1.0f);
+    
+    // Frames encoded
+    snprintf(buf, sizeof(buf), "Frames: %d", frames_encoded);
+    Render_DrawText(buf, card_x + 40, details_y + 40, 2.0f, 0.8f, 0.84f, 0.96f, 1.0f);
+    
+    // Resolution
+    if (res_w > 0 && res_h > 0) {
+        snprintf(buf, sizeof(buf), "Resolution: %dx%d", res_w, res_h);
+        Render_DrawText(buf, card_x + 40, details_y + 80, 2.0f, 0.8f, 0.84f, 0.96f, 1.0f);
+    }
+    
+    // Help text at bottom
+    Render_DrawText("Close window to stop streaming", card_x + 70, card_y + card_h - 50, 
+                    1.5f, 0.5f, 0.52f, 0.6f, 1.0f);
 }
