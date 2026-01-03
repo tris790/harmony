@@ -61,12 +61,16 @@ void Codec_DecodePacket(DecoderContext *ctx, EncodedPacket *packet, VideoFrame *
     bool is_keyframe = Codec_IsKeyframe(packet->data, packet->size);
     
     if (is_keyframe) {
+        if (!ctx->has_received_keyframe) {
+            printf("Decoder: First keyframe received! Enabling decoding.\n");
+        }
         ctx->has_received_keyframe = true;
     }
     
     // Don't decode until we've received a keyframe - prevents "non-existing PPS" errors
     if (!ctx->has_received_keyframe) {
-        // Silently skip - we're waiting for a keyframe to sync
+        printf("Decoder: Skipping packet - waiting for keyframe (has_kf=%d, is_kf=%d)\n", 
+               ctx->has_received_keyframe, is_keyframe);
         return;
     }
     
