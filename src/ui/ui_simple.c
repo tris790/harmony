@@ -752,8 +752,8 @@ void UI_DrawStreamStatus(int w, int h, float time, int frames_encoded,
     int cx = w / 2;
     int cy = h / 2;
     
-    int card_w = 500;
-    int card_h = 320; // Slightly taller card for better spacing
+    int card_w = 420;
+    int card_h = 240; 
     int card_x = cx - card_w / 2;
     int card_y = cy - card_h / 2;
     
@@ -761,9 +761,9 @@ void UI_DrawStreamStatus(int w, int h, float time, int frames_encoded,
                            0.16f, 0.16f, 0.22f, 1.0f);
     
     // --- Vertical Centering ---
-    float scale_status = is_capturing ? 2.5f : 2.0f;
-    float scale_details = 2.0f;
-    float scale_footer = 1.6f;
+    float scale_status = is_capturing ? 2.2f : 1.8f;
+    float scale_details = 1.8f;
+    float scale_footer = 1.4f;
     
     const char *status_text = is_capturing ? "STREAMING LIVE" : "Waiting for capture...";
     char target_buf[128];
@@ -778,49 +778,49 @@ void UI_DrawStreamStatus(int w, int h, float time, int frames_encoded,
 
     // Content block height estimate
     float total_h = 0;
-    total_h += 40; // Status line
-    total_h += 40; // Target
-    total_h += 40; // Frames
-    if (res_buf[0]) total_h += 40; // Res
-    total_h += 50; // Gap to footer
-    total_h += 20; // Footer
+    total_h += 35; // Status line
+    total_h += 30; // Target
+    total_h += 30; // Frames
+    if (res_buf[0]) total_h += 30; // Res
+    total_h += 35; // Gap to footer
+    total_h += 16; // Footer
 
     float current_y = card_y + (card_h - total_h) / 2.0f;
 
     // --- Draw Header (Status + Indicator) ---
     float status_tw = Render_GetTextWidth(status_text, scale_status);
-    float indicator_w = 30.0f;
+    float indicator_w = 28.0f;
     float header_w = indicator_w + status_tw;
     float header_x = card_x + (card_w - header_w) / 2.0f;
 
-    UI_DrawRecordingIndicator((int)header_x + 8, (int)current_y + 12, time);
+    UI_DrawRecordingIndicator((int)header_x + 8, (int)current_y + 10, time);
     Render_DrawText(status_text, header_x + indicator_w, current_y, scale_status, 
                     is_capturing ? 0.65f : 0.98f, 
                     is_capturing ? 0.89f : 0.84f, 
                     is_capturing ? 0.63f : 0.48f, 1.0f);
     
-    current_y += 60; // Larger step after header
+    current_y += 50; // Tighter step after header
 
     // --- Draw Details ---
     float target_tw = Render_GetTextWidth(target_buf, scale_details);
     Render_DrawText(target_buf, card_x + (card_w - target_tw) / 2.0f, current_y, scale_details, 
                     0.8f, 0.84f, 0.96f, 1.0f);
-    current_y += 40;
+    current_y += 30;
 
     float frames_tw = Render_GetTextWidth(frames_buf, scale_details);
     Render_DrawText(frames_buf, card_x + (card_w - frames_tw) / 2.0f, current_y, scale_details, 
                     0.8f, 0.84f, 0.96f, 1.0f);
-    current_y += 40;
+    current_y += 30;
 
     if (res_buf[0]) {
         float res_tw = Render_GetTextWidth(res_buf, scale_details);
         Render_DrawText(res_buf, card_x + (card_w - res_tw) / 2.0f, current_y, scale_details, 
                         0.8f, 0.84f, 0.96f, 1.0f);
-        current_y += 40;
+        current_y += 30;
     }
 
     // --- Draw Footer ---
-    current_y += 20; // Extra gap
+    current_y += 15; // Smaller extra gap
     float footer_tw = Render_GetTextWidth(footer_text, scale_footer);
     Render_DrawText(footer_text, card_x + (card_w - footer_tw) / 2.0f, current_y, scale_footer, 
                     0.5f, 0.52f, 0.6f, 0.8f);
