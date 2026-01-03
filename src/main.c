@@ -30,6 +30,15 @@ void Net_SendPacketCallback(void *user_data, void *packet_data, size_t packet_si
     Net_Send(d->net, d->dest_ip, d->dest_port, packet_data, packet_size);
 }
 
+// Calculate target bitrate based on resolution and framerate.
+// Uses a quality factor of ~0.25 bits per pixel.
+static int CalculateTargetBitrate(int width, int height, int fps) {
+    // 0.25 bits/pixel gives good quality for ultrafast preset
+    // 720p30: 1280*720*30*0.25 = ~6.9 Mbps
+    // 1080p30: 1920*1080*30*0.25 = ~15.5 Mbps
+    return (int)(width * height * fps * 0.25f);
+}
+
 int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose) {
     printf("Starting HOST Mode...\n");
     
@@ -51,7 +60,9 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     CaptureContext *capture = Capture_Init(arena, node_id);
     if (!capture) return 1;
 
-    VideoFormat vfmt = { .width = 1280, .height = 720, .fps = 30, .bitrate = 2000000 };
+    // Use dynamic bitrate calculation
+    int initial_bitrate = CalculateTargetBitrate(1280, 720, 30);
+    VideoFormat vfmt = { .width = 1280, .height = 720, .fps = 30, .bitrate = initial_bitrate };
     EncoderContext *encoder = Codec_InitEncoder(arena, vfmt);
     if (!encoder) return 1;
 
@@ -186,6 +197,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                 
                 vfmt.width = safe_width;
                 vfmt.height = safe_height;
+                vfmt.bitrate = CalculateTargetBitrate(safe_width, safe_height, vfmt.fps);
                 encoder = Codec_InitEncoder(arena, vfmt);
                 
                 if (encoder) {
@@ -272,6 +284,12 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     float time_since_last_punch = 0.0f;
     const float PUNCH_INTERVAL = 0.5f; // Send punch every 500ms
     
+    // Bandwidth measurement
+    size_t bytes_received_window = 0;
+    float bandwidth_window_time = 0.0f;
+    const float BANDWIDTH_WINDOW = 1.0f; // Measure over 1 second
+    float current_mbps = 0.0f;
+    
     while (OS_ProcessEvents(window)) {
         // Check for ESC to return to menu
         if (OS_IsEscapePressed()) {
@@ -297,6 +315,8 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         
         int n;
         while ((n = Net_Recv(net, buf, sizeof(buf), sender_ip, &sender_port)) > 0) {
+            bytes_received_window += n; // Track bandwidth
+            
             void *frame_data = NULL;
             size_t frame_size = 0;
             
@@ -332,6 +352,14 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
             }
         }
         
+        // Update bandwidth measurement
+        bandwidth_window_time += 1.0f / 30.0f;
+        if (bandwidth_window_time >= BANDWIDTH_WINDOW) {
+            current_mbps = (bytes_received_window * 8.0f) / (bandwidth_window_time * 1000000.0f);
+            bytes_received_window = 0;
+            bandwidth_window_time = 0.0f;
+        }
+        
         // Update timeout tracking - reset on ANY packet (including keepalive)
         if (received_any_packet) {
             time_since_last_frame = 0.0f;
@@ -363,8 +391,8 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                 char meta_text[256];
                 snprintf(meta_text, sizeof(meta_text), "HOST: %s | %s", stream_meta.os_name, stream_meta.de_name);
                 char meta_text2[256];
-                snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FMT: %s | COLOR: %s", 
-                    stream_meta.screen_width, stream_meta.screen_height, stream_meta.format_name, stream_meta.color_space);
+                snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FMT: %s | RX: %.1f Mbps", 
+                    stream_meta.screen_width, stream_meta.screen_height, stream_meta.format_name, current_mbps);
 
                 Render_DrawRect(10, 10, 600, 80, 0.0f, 0.0f, 0.0f, 0.7f); // Transparent black box
                 Render_DrawText(meta_text, 20, 30, 1.5f, 1.0f, 1.0f, 1.0f, 1.0f);

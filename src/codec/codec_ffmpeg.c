@@ -36,6 +36,12 @@ EncoderContext* Codec_InitEncoder(MemoryArena *arena, VideoFormat format) {
     ctx->codec_ctx->gop_size = 10; // Frequent keyframes for low latency recovery
     ctx->codec_ctx->max_b_frames = 0; // No B-frames for low latency
     ctx->codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+    
+    // VBR Rate Control: Allow short bursts for high-motion scenes
+    // rc_max_rate caps instantaneous bitrate to respect network limits
+    // rc_buffer_size (0.5s buffer) allows encoder to "borrow" bits for complex frames
+    ctx->codec_ctx->rc_max_rate = format.bitrate;
+    ctx->codec_ctx->rc_buffer_size = format.bitrate / 2;
 
     // Optional: Tune for low latency
     av_opt_set(ctx->codec_ctx->priv_data, "preset", "ultrafast", 0);
