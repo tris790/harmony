@@ -209,11 +209,18 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
 
         Capture_Poll(capture);
         
-        // Poll and send audio
+        // Poll and send ALL available audio frames
+        // Audio runs at 48kHz with 20ms (960 sample) frames = 50 frames/sec
+        // We may have multiple buffered, send them all
         if (audio_capture && audio_encoder) {
-            Audio_PollCapture(audio_capture);
-            AudioFrame *aframe = Audio_GetCapturedFrame(audio_capture);
-            if (aframe) {
+            // Poll multiple times to ensure we get all buffered audio
+            for (int poll = 0; poll < 5; poll++) {
+                Audio_PollCapture(audio_capture);
+            }
+            
+            // Send all available audio frames
+            AudioFrame *aframe;
+            while ((aframe = Audio_GetCapturedFrame(audio_capture)) != NULL) {
                 EncodedAudio encoded_audio = {0};
                 Audio_Encode(audio_encoder, aframe, &encoded_audio);
                 if (encoded_audio.size > 0) {

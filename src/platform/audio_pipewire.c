@@ -31,7 +31,7 @@ struct AudioCaptureContext {
     bool frame_ready;
 };
 
-// Capture stream callback
+// Capture stream callback - just buffer the samples
 static void capture_on_process(void *data) {
     AudioCaptureContext *ctx = (AudioCaptureContext *)data;
     struct pw_buffer *b;
@@ -50,30 +50,16 @@ static void capture_on_process(void *data) {
     int16_t *samples = (int16_t *)buf->datas[0].data;
     int n_samples = buf->datas[0].chunk->size / sizeof(int16_t);
     
-    // Copy to ring buffer
-    for (int i = 0; i < n_samples && ctx->available < ctx->buffer_size; i++) {
+    // Copy to ring buffer (overwrite old data if full)
+    for (int i = 0; i < n_samples; i++) {
         ctx->buffer[ctx->write_pos] = samples[i];
         ctx->write_pos = (ctx->write_pos + 1) % ctx->buffer_size;
-        ctx->available++;
-    }
-    
-    // Check if we have a full frame (AUDIO_FRAME_SIZE * AUDIO_CHANNELS samples)
-    int frame_samples = AUDIO_FRAME_SIZE * AUDIO_CHANNELS;
-    if (ctx->available >= frame_samples) {
-        // Copy to current_frame
-        if (!ctx->current_frame.samples) {
-            ctx->current_frame.samples = ArenaPush(ctx->arena, frame_samples * sizeof(int16_t));
-        }
-        
-        for (int i = 0; i < frame_samples; i++) {
-            ctx->current_frame.samples[i] = ctx->buffer[ctx->read_pos];
+        if (ctx->available < ctx->buffer_size) {
+            ctx->available++;
+        } else {
+            // Buffer full, advance read pos to drop oldest
             ctx->read_pos = (ctx->read_pos + 1) % ctx->buffer_size;
         }
-        ctx->available -= frame_samples;
-        
-        ctx->current_frame.sample_count = AUDIO_FRAME_SIZE;
-        ctx->current_frame.channels = AUDIO_CHANNELS;
-        ctx->frame_ready = true;
     }
     
     pw_stream_queue_buffer(ctx->stream, b);
@@ -154,10 +140,28 @@ void Audio_PollCapture(AudioCaptureContext *ctx) {
 }
 
 AudioFrame* Audio_GetCapturedFrame(AudioCaptureContext *ctx) {
-    if (ctx && ctx->frame_ready) {
-        ctx->frame_ready = false;
+    if (!ctx) return NULL;
+    
+    // Check if we have enough samples for a full frame
+    int frame_samples = AUDIO_FRAME_SIZE * AUDIO_CHANNELS;
+    if (ctx->available >= frame_samples) {
+        // Ensure we have a buffer for the frame
+        if (!ctx->current_frame.samples) {
+            ctx->current_frame.samples = ArenaPush(ctx->arena, frame_samples * sizeof(int16_t));
+        }
+        
+        // Copy samples from ring buffer
+        for (int i = 0; i < frame_samples; i++) {
+            ctx->current_frame.samples[i] = ctx->buffer[ctx->read_pos];
+            ctx->read_pos = (ctx->read_pos + 1) % ctx->buffer_size;
+        }
+        ctx->available -= frame_samples;
+        
+        ctx->current_frame.sample_count = AUDIO_FRAME_SIZE;
+        ctx->current_frame.channels = AUDIO_CHANNELS;
         return &ctx->current_frame;
     }
+    
     return NULL;
 }
 
