@@ -514,7 +514,8 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     EncoderThreadContext encoder_ctx = {0};
     encoder_ctx.frame_queue = Queue_Create();
     encoder_ctx.vfmt = vfmt;
-    encoder_ctx.arena = ArenaPush(arena, 32 * 1024 * 1024);
+    encoder_ctx.arena = PushStruct(arena, MemoryArena);
+    ArenaInit(encoder_ctx.arena, 32 * 1024 * 1024);
     encoder_ctx.net = net;
     strncpy(encoder_ctx.viewer_ip, target_ip, 15);
     encoder_ctx.viewer_port = 9999;
@@ -708,7 +709,8 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     decoder_ctx.decoder = decoder;
     decoder_ctx.out_frame = &decoded_frame;
     decoder_ctx.frame_mutex = frame_mutex;
-    decoder_ctx.arena = ArenaPush(arena, 32 * 1024 * 1024);
+    decoder_ctx.arena = PushStruct(arena, MemoryArena);
+    ArenaInit(decoder_ctx.arena, 32 * 1024 * 1024);
     decoder_ctx.encryption_enabled = encryption_enabled;
     if (encryption_enabled) AES_Init(&decoder_ctx.aes_ctx, master_key);
     decoder_ctx.running = true;
