@@ -850,22 +850,16 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         UI_CenterNext(input_w);
         UI_TextInput("ip_input", config->target_ip, 64, 0, cy + 50, input_w, 50, UI_INPUT_NUMERIC);
         
-        // Password and FPS row
-        int row_y = cy + 110;
-        UI_Label("Password:", cx - 210, row_y, 2.0f);
-        UI_TextInput("pass_input", config->stream_password, 64, cx - 180, row_y + 30, 160, 40, UI_INPUT_PASSWORD);
-
-        UI_Label("FPS:", cx + 20, row_y, 2.0f);
-        static char fps_buf[16];
-        static bool fps_init = false;
-        if (!fps_init) { snprintf(fps_buf, sizeof(fps_buf), "%u", config->fps); fps_init = true; }
-        UI_TextInput("fps_input", fps_buf, 16, cx + 70, row_y + 30, 80, 40, UI_INPUT_NUMERIC);
-        config->fps = (uint32_t)atoi(fps_buf);
-        if (config->fps == 0) config->fps = 60; // Sanity
+        // Password Config
+        UI_CenterNext(0);
+        UI_Label("Stream Password:", 0, cy + 105, 1.8f);
+        
+        UI_CenterNext(input_w);
+        UI_TextInput("pass_input", config->stream_password, 64, 0, cy + 130, input_w, 40, UI_INPUT_PASSWORD);
         
         // Audio Source List
         if (config->is_host) {
-            int audio_y = cy + 180;
+            int audio_y = cy + 175;
             UI_CenterNext(0);
             UI_Label("Audio Source:", 0, audio_y, 2.0f);
             
