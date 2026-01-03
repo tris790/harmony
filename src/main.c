@@ -375,18 +375,35 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         while ((n = Net_Recv(net, buf, sizeof(buf), sender_ip, &sender_port)) > 0) {
             bytes_received_window += n; // Track bandwidth
             
-            // Peek at packet type from header to route to correct reassembler
+            // Peek at packet type from header
             if (n < (int)sizeof(PacketHeader)) continue;
             PacketHeader *peek_header = (PacketHeader *)buf;
             uint8_t ptype = peek_header->packet_type;
             
+            // Handle single-packet types directly (don't interfere with reassembler)
+            if (ptype == PACKET_TYPE_KEEPALIVE) {
+                received_any_packet = true;
+                continue;
+            }
+            
+            if (ptype == PACKET_TYPE_METADATA) {
+                // Metadata is single-packet, extract directly
+                uint8_t *payload = buf + sizeof(PacketHeader);
+                size_t payload_size = peek_header->payload_size;
+                if (payload_size == sizeof(StreamMetadata)) {
+                    memcpy(&stream_meta, payload, sizeof(StreamMetadata));
+                }
+                received_any_packet = true;
+                continue;
+            }
+            
+            // For multi-packet types (video, audio), use reassemblers
             void *frame_data = NULL;
             size_t frame_size = 0;
             uint8_t packet_type = 0;
             ReassemblyResult res;
             
-            // Route to appropriate reassembler based on packet type
-            if (ptype == PACKET_TYPE_VIDEO || ptype == PACKET_TYPE_METADATA || ptype == PACKET_TYPE_KEEPALIVE) {
+            if (ptype == PACKET_TYPE_VIDEO) {
                 res = Protocol_HandlePacket(&video_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
             } else if (ptype == PACKET_TYPE_AUDIO) {
                 res = Protocol_HandlePacket(&audio_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
@@ -395,15 +412,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
             }
             
             if (res == RESULT_COMPLETE) {
-                if (packet_type == PACKET_TYPE_KEEPALIVE) {
-                    // Keepalive received - just reset timeout, don't decode anything
-                    received_any_packet = true;
-                } else if (packet_type == PACKET_TYPE_METADATA) {
-                     if (frame_size == sizeof(StreamMetadata)) {
-                         memcpy(&stream_meta, frame_data, sizeof(StreamMetadata));
-                     }
-                     received_any_packet = true;
-                } else if (packet_type == PACKET_TYPE_AUDIO) {
+                if (packet_type == PACKET_TYPE_AUDIO) {
                     // Decode and play audio
                     if (audio_decoder && audio_playback) {
                         AudioFrame audio_frame = {0};
@@ -414,10 +423,8 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                     }
                     received_any_packet = true;
                 } else if (packet_type == PACKET_TYPE_VIDEO) {
-                    // 2. Decode
+                    // Decode video
                     EncodedPacket pkt = { .data = frame_data, .size = frame_size };
-                    
-                    // Decode directly
                     Codec_DecodePacket(decoder, &pkt, &decoded_frame);
                     received_frame_this_tick = true;
                     received_any_packet = true;
