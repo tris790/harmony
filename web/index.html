@@ -271,7 +271,7 @@
     </div>
 
     <div id="container">
-        <video id="player" autoplay playsinline></video>
+        <video id="player" autoplay muted playsinline></video>
         <div id="status">
             <span class="status-dot"></span>
             <span id="status-text" class="status-text">Disconnected</span>
@@ -369,6 +369,8 @@
             ws = new WebSocket(url);
             ws.binaryType = 'arraybuffer';
 
+            let messageQueue = Promise.resolve();
+
             ws.onopen = () => {
                 console.log('Connected to WebSocket Server');
                 statusDiv.classList.add('connected');
@@ -376,49 +378,52 @@
                 // Keep STATE_WAITING until first frame
             };
 
-            ws.onmessage = async (event) => {
-                let data = new Uint8Array(event.data);
+            ws.onmessage = (event) => {
+                // Sequential processing to avoid out-of-order issues from async decryption
+                messageQueue = messageQueue.then(async () => {
+                    let data = new Uint8Array(event.data);
 
-                // Prepend 4 bytes for frame_id, 1 byte for type
-                if (data.length < 5) return;
+                    // Prepend 4 bytes for frame_id, 1 byte for type
+                    if (data.length < 5) return;
 
-                const frameIdBytes = data.slice(0, 4);
-                const packetType = data[4];
-                const actualData = data.slice(5);
+                    const frameIdBytes = data.slice(0, 4);
+                    const packetType = data[4];
+                    const actualData = data.slice(5);
 
-                let decryptedData = actualData;
-                if (cryptoKey) {
-                    const iv = new Uint8Array(16);
-                    iv.set(frameIdBytes, 0); // frame_id is big-endian from C (htonl)
+                    let decryptedData = actualData;
+                    if (cryptoKey && packetType === 0) { // Only decrypt VIDEO (0)
+                        const iv = new Uint8Array(16);
+                        iv.set(frameIdBytes, 0); // frame_id is big-endian from C (htonl)
 
-                    try {
-                        const decryptedBuffer = await crypto.subtle.decrypt(
-                            {
-                                name: 'AES-CTR',
-                                counter: iv,
-                                length: 64
-                            },
-                            cryptoKey,
-                            actualData
-                        );
-                        decryptedData = new Uint8Array(decryptedBuffer);
-                    } catch (e) {
-                        console.error('Decryption failed', e);
-                        return;
+                        try {
+                            const decryptedBuffer = await crypto.subtle.decrypt(
+                                {
+                                    name: 'AES-CTR',
+                                    counter: iv,
+                                    length: 64
+                                },
+                                cryptoKey,
+                                actualData
+                            );
+                            decryptedData = new Uint8Array(decryptedBuffer);
+                        } catch (e) {
+                            console.error('Decryption failed', e);
+                            return;
+                        }
                     }
-                }
 
-                if (!frameReceived && packetType === 0) {
-                    console.log('First video frame received! Transitioning to streaming.');
-                    frameReceived = true;
-                    setState(STATE_STREAMING);
-                }
+                    if (!frameReceived && packetType === 0) {
+                        console.log('First video frame received! Transitioning to streaming.');
+                        frameReceived = true;
+                        setState(STATE_STREAMING);
+                    }
 
-                if (packetType === 0) {
-                    jmuxer.feed({ video: decryptedData });
-                } else if (packetType === 4) {
-                    jmuxer.feed({ audio: decryptedData });
-                }
+                    if (packetType === 0) {
+                        jmuxer.feed({ video: decryptedData });
+                    } else if (packetType === 4) {
+                        jmuxer.feed({ audio: decryptedData });
+                    }
+                });
             };
 
             ws.onclose = () => {
@@ -457,6 +462,7 @@
         });
 
         video.addEventListener('click', () => {
+            video.muted = false;
             video.play().catch(console.error);
         });
     </script>
