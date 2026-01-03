@@ -404,6 +404,22 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
             ReassemblyResult res;
             
             if (ptype == PACKET_TYPE_VIDEO) {
+                // Check if we are about to overwrite an incomplete frame
+                PacketHeader *hdr = (PacketHeader *)buf;
+                if (hdr->frame_id > video_reassembler.active_buffer.frame_id) {
+                    if (video_reassembler.active_buffer.frame_id > 0 && 
+                        video_reassembler.active_buffer.received_bytes < video_reassembler.active_buffer.total_size) {
+                        static int drop_log_counter = 0;
+                        if (drop_log_counter++ % 30 == 0) { // Log only once every ~30 drops
+                            printf("Viewer: DROPPED FRAME %u! Receive count: %d. Received %zu/%zu bytes. (Next: %u)\n", 
+                                video_reassembler.active_buffer.frame_id,
+                                drop_log_counter,
+                                video_reassembler.active_buffer.received_bytes,
+                                video_reassembler.active_buffer.total_size,
+                                hdr->frame_id);
+                        }
+                    }
+                }
                 res = Protocol_HandlePacket(&video_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
             } else if (ptype == PACKET_TYPE_AUDIO) {
                 res = Protocol_HandlePacket(&audio_reassembler, buf, n, &frame_data, &frame_size, &packet_type);

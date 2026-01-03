@@ -38,14 +38,23 @@ static bool Codec_IsKeyframe(uint8_t *data, size_t size) {
     
     // Look for NAL start codes (0x00 0x00 0x01 or 0x00 0x00 0x00 0x01)
     // and check NAL unit types
+    // If we are looking for a keyframe, let's print what NALs we find to debug
+    bool found_any_nal = false;
+    
     for (size_t i = 0; i + 4 < size; i++) {
         bool start_code_3 = (data[i] == 0 && data[i+1] == 0 && data[i+2] == 1);
         bool start_code_4 = (i + 5 < size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1);
         
         if (start_code_3 || start_code_4) {
+            found_any_nal = true;
             size_t nal_offset = start_code_4 ? i + 4 : i + 3;
             if (nal_offset < size) {
                 uint8_t nal_type = data[nal_offset] & 0x1F;
+                
+                // Debug print for non-keyframe packets if we haven't seen a keyframe yet
+                // (This helps identify if we are receiving P-frames but missed I-frame)
+                // printf("Decoder: Found NAL Type %d\n", nal_type);
+                
                 // NAL types: 5=IDR, 7=SPS, 8=PPS
                 if (nal_type == 5 || nal_type == 7 || nal_type == 8) {
                     return true;
@@ -53,6 +62,15 @@ static bool Codec_IsKeyframe(uint8_t *data, size_t size) {
             }
         }
     }
+    
+    if (!found_any_nal && size > 16) {
+        static int nal_err_counter = 0;
+        if (nal_err_counter++ % 30 == 0) {
+            printf("Decoder: No NAL start codes found in packet of size %zu! (Header: %02x %02x %02x %02x)\n", 
+                   size, data[0], data[1], data[2], data[3]);
+        }
+    }
+    
     return false;
 }
 
