@@ -13,6 +13,8 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/mman.h>
+#include <xkbcommon/xkbcommon.h>
 
 #include "generated/xdg-shell-client-protocol.h"
 #include "generated/xdg-decoration-client-protocol.h"
@@ -62,6 +64,10 @@ static int32_t g_repeat_rate = 0;
 static int32_t g_repeat_delay = 0;
 static uint32_t g_repeat_key = 0;
 static double g_next_repeat_time = 0;
+
+static struct xkb_context *g_xkb_context = NULL;
+static struct xkb_keymap *g_xkb_keymap = NULL;
+static struct xkb_state *g_xkb_state = NULL;
 
 // --- Data Device ---
 static void data_offer_offer(void *data, struct wl_data_offer *wl_data_offer, const char *mime_type) {
@@ -197,16 +203,27 @@ static bool g_f11_pressed = false;
 static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_t format, int32_t fd, uint32_t size) {
     (void)data;
     (void)wl_keyboard;
-    (void)format;
-    (void)size;
-    // We strictly need XKB common to map keys...
-    // For "Handmade" MVP without xkbcommon dependency, we can't easily map raw scancodes to ASCII.
-    // However, including xkbcommon is standard even for minimal Wayland.
-    // If we want ZERO dependencies, we are stuck with raw scancodes (driver dependent).
-    // Let's assume we map only numeric keys and dots for IP?
-    // Or we use a tiny scancode-to-ascii table for US QWERTY.
-    // Let's implement a MICRO scancode table for 0-9, dot.
+    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+        close(fd);
+        return;
+    }
+
+    char *map_str = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (map_str == MAP_FAILED) {
+        close(fd);
+        return;
+    }
+
+    if (g_xkb_keymap) xkb_keymap_unref(g_xkb_keymap);
+    if (g_xkb_state) xkb_state_unref(g_xkb_state);
+
+    g_xkb_keymap = xkb_keymap_new_from_string(g_xkb_context, map_str, XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    munmap(map_str, size);
     close(fd);
+
+    if (g_xkb_keymap) {
+        g_xkb_state = xkb_state_new(g_xkb_keymap);
+    }
 }
 
 static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {
@@ -228,11 +245,9 @@ static void keyboard_modifiers(void *data, struct wl_keyboard *wl_keyboard, uint
     (void)data;
     (void)wl_keyboard;
     (void)serial;
-    (void)mods_depressed;
-    (void)mods_latched;
-    (void)mods_locked;
-    (void)group;
-    // We'll use keyboard_key for modifier state as xkbcommon isn't used for raw scancodes here.
+    if (g_xkb_state) {
+        xkb_state_update_mask(g_xkb_state, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+    }
 }
 
 static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
@@ -244,40 +259,42 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t s
     if (key == 29 || key == 97) g_ctrl_down = pressed; // Left Ctrl=29, Right Ctrl=97
 
     if (pressed) {
-        if (key == 1) {
-            g_escape_pressed = true;
-            return;
+        if (g_xkb_state) {
+            xkb_keysym_t sym = xkb_state_key_get_one_sym(g_xkb_state, key + 8);
+            
+            if (sym == XKB_KEY_Escape) g_escape_pressed = true;
+            if (sym == XKB_KEY_F11) g_f11_pressed = true;
+            
+            // Check for Ctrl/Modifiers via symbols or state
+            // Re-detect Ctrl state just in case
+            g_ctrl_down = (xkb_state_mod_name_is_active(g_xkb_state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_DEPRESSED) ||
+                           xkb_state_mod_name_is_active(g_xkb_state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_LATCHED));
+
+            if (sym == XKB_KEY_v && g_ctrl_down) {
+                g_paste_requested = true;
+                return;
+            }
+
+            char c = 0;
+            if (sym == XKB_KEY_BackSpace) c = '\b';
+            else if (sym == XKB_KEY_Delete) c = '\x7f';
+            else if (sym == XKB_KEY_Left)   c = '\x11';
+            else if (sym == XKB_KEY_Right)  c = '\x12';
+            else if (sym == XKB_KEY_Home)   c = '\x13';
+            else if (sym == XKB_KEY_End)    c = '\x14';
+            else if (g_ctrl_down && sym == XKB_KEY_z) c = '\x1a';
+            else if (g_ctrl_down && sym == XKB_KEY_y) c = '\x19';
+            else {
+                // Get UTF-8
+                char buf[8];
+                if (xkb_state_key_get_utf8(g_xkb_state, key + 8, buf, sizeof(buf)) > 0) {
+                    c = buf[0];
+                }
+            }
+            last_char = c;
         }
 
-        if (key == 87) { // F11 is 87
-            g_f11_pressed = true;
-            return;
-        }
-        
-        if (key == 47 && g_ctrl_down) { // 'V' is 47
-            g_paste_requested = true;
-            return;
-        }
-
-        // Simple QWERTY scancode map
-        char c = 0;
-        if (key >= 2 && key <= 10) c = '1' + (key - 2);
-        if (key == 11) c = '0';
-        if (key == 52) c = '.';
-        if (key == 14) c = '\b'; // Backspace
-        if (key == 111) c = '\x7f'; // Delete
-        
-        if (key == 105) c = '\x11'; // Left
-        if (key == 106) c = '\x12'; // Right
-        if (key == 102) c = '\x13'; // Home
-        if (key == 107) c = '\x14'; // End
-        
-        if (g_ctrl_down) {
-            if (key == 44) c = '\x1a'; // Ctrl+Z (Undo)
-            if (key == 21) c = '\x19'; // Ctrl+Y (Redo)
-        }
-        
-        last_char = c;
+        // Start repeat
 
         // Start repeat
         if (g_repeat_rate > 0) {
@@ -458,6 +475,8 @@ static const struct wl_registry_listener registry_listener = {
 WindowContext* OS_CreateWindow(MemoryArena *arena, int width, int height, const char *title) {
     // 1. Connect Display
     g_wayland_arena = arena;
+    if (!g_xkb_context) g_xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+
     if (!display) {
         display = wl_display_connect(NULL);
         if (!display) {
@@ -600,25 +619,27 @@ bool OS_ProcessEvents(WindowContext *window) {
         double now = OS_GetTime();
         if (now >= g_next_repeat_time) {
             // Trigger repeat
-            uint32_t key = g_repeat_key;
-            char c = 0;
-            if (key >= 2 && key <= 10) c = '1' + (key - 2);
-            if (key == 11) c = '0';
-            if (key == 52) c = '.';
-            if (key == 14) c = '\b'; // Backspace
-            if (key == 111) c = '\x7f'; // Delete
-            if (key == 105) c = '\x11'; // Left
-            if (key == 106) c = '\x12'; // Right
-            if (key == 102) c = '\x13'; // Home
-            if (key == 107) c = '\x14'; // End
-            
-            if (g_ctrl_down) {
-                if (key == 44) c = '\x1a'; // Ctrl+Z
-                if (key == 21) c = '\x19'; // Ctrl+Y
-            }
-            
-            if (c != 0) {
-                last_char = c;
+            if (g_xkb_state) {
+                xkb_keysym_t sym = xkb_state_key_get_one_sym(g_xkb_state, g_repeat_key + 8);
+                char c = 0;
+                if (sym == XKB_KEY_BackSpace) c = '\b';
+                else if (sym == XKB_KEY_Delete) c = '\x7f';
+                else if (sym == XKB_KEY_Left)   c = '\x11';
+                else if (sym == XKB_KEY_Right)  c = '\x12';
+                else if (sym == XKB_KEY_Home)   c = '\x13';
+                else if (sym == XKB_KEY_End)    c = '\x14';
+                else if (g_ctrl_down && sym == XKB_KEY_z) c = '\x1a';
+                else if (g_ctrl_down && sym == XKB_KEY_y) c = '\x19';
+                else {
+                    char buf[8];
+                    if (xkb_state_key_get_utf8(g_xkb_state, g_repeat_key + 8, buf, sizeof(buf)) > 0) {
+                        c = buf[0];
+                    }
+                }
+                
+                if (c != 0) {
+                    last_char = c;
+                }
             }
             
             g_next_repeat_time = now + 1.0 / (double)g_repeat_rate;

@@ -255,6 +255,10 @@
                 <label for="host-input">Host Address (IPv4)</label>
                 <input type="text" id="host-input" placeholder="e.g. 192.168.1.10" spellcheck="false">
             </div>
+            <div class="input-group">
+                <label for="pass-input">Stream Password</label>
+                <input type="text" id="pass-input" placeholder="Leave empty if none" spellcheck="false">
+            </div>
             <button id="connect-btn">Connect to Stream</button>
         </div>
     </div>
@@ -280,6 +284,7 @@
         const waitingScreen = document.getElementById('waiting-screen');
         const connectBtn = document.getElementById('connect-btn');
         const hostInput = document.getElementById('host-input');
+        const passInput = document.getElementById('pass-input');
 
         // State constants
         const STATE_SETUP = 'setup';
@@ -293,6 +298,9 @@
 
         // Initialize host input from saved value or current domain
         hostInput.value = localStorage.getItem('harmony_host') || window.location.hostname || '';
+        passInput.value = localStorage.getItem('harmony_pass') || '';
+
+        let cryptoKey = null;
 
         // JMuxer instance
         const jmuxer = new JMuxer({
@@ -304,6 +312,21 @@
             fps: 60,
             debug: false
         });
+
+        async function deriveKey(password) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(password);
+            const hash = await crypto.subtle.digest('SHA-1', data);
+            // Use first 16 bytes for AES-CTR
+            const keyData = hash.slice(0, 16);
+            return await crypto.subtle.importKey(
+                'raw',
+                keyData,
+                { name: 'AES-CTR' },
+                false,
+                ['decrypt']
+            );
+        }
 
         function setState(state) {
             currentState = state;
@@ -320,11 +343,18 @@
             }
         }
 
-        function connect() {
+        async function connect() {
             if (!targetHost) return;
 
             setState(STATE_WAITING);
             frameReceived = false;
+
+            const password = passInput.value.trim();
+            if (password) {
+                cryptoKey = await deriveKey(password);
+            } else {
+                cryptoKey = null;
+            }
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const url = `${protocol}//${targetHost}:8080`;
@@ -344,14 +374,44 @@
                 // Keep STATE_WAITING until first frame
             };
 
-            ws.onmessage = (event) => {
+            ws.onmessage = async (event) => {
+                let data = new Uint8Array(event.data);
+
+                // Prepend 4 bytes for frame_id
+                if (data.length < 4) return;
+
+                const frameIdBytes = data.slice(0, 4);
+                const actualData = data.slice(4);
+
+                let decryptedData = actualData;
+                if (cryptoKey) {
+                    const iv = new Uint8Array(16);
+                    iv.set(frameIdBytes, 0); // frame_id is big-endian from C (htonl)
+
+                    try {
+                        const decryptedBuffer = await crypto.subtle.decrypt(
+                            {
+                                name: 'AES-CTR',
+                                counter: iv,
+                                length: 64 // Use 64 bits of the IV for counter (standard-ish if we don't specify more)
+                                // Actually, SubtleCrypto expects 128-bit 'counter' as the initial counter block.
+                            },
+                            cryptoKey,
+                            actualData
+                        );
+                        decryptedData = new Uint8Array(decryptedBuffer);
+                    } catch (e) {
+                        console.error('Decryption failed', e);
+                        return;
+                    }
+                }
+
                 if (!frameReceived) {
                     console.log('First frame received! Transitioning to streaming.');
                     frameReceived = true;
                     setState(STATE_STREAMING);
                 }
-                const data = new Uint8Array(event.data);
-                jmuxer.feed({ video: data });
+                jmuxer.feed({ video: decryptedData });
             };
 
             ws.onclose = () => {
@@ -376,6 +436,7 @@
             targetHost = hostInput.value.trim();
             if (targetHost) {
                 localStorage.setItem('harmony_host', targetHost);
+                localStorage.setItem('harmony_pass', passInput.value.trim());
                 connect();
             }
         });

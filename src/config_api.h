@@ -8,6 +8,7 @@ typedef struct PersistentConfig {
     bool is_host;
     bool verbose;
     char target_ip[64];
+    char stream_password[64];
     bool use_portal_audio;
     char encoder_preset[32]; // x264 preset: ultrafast, superfast, veryfast, faster, fast, medium
 } PersistentConfig;

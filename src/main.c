@@ -12,6 +12,7 @@
 #include <stdlib.h> // For getenv
 
 #include "net/websocket.h"
+#include "net/aes.h"
 
 // Forward Declaration (should be in a header)
 
@@ -109,7 +110,7 @@ static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *
     }
 }
 
-int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id, const char *encoder_preset) {
+int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id, const char *encoder_preset, const char *password) {
     (void)verbose;
     printf("Starting HOST Mode...\n");
     
@@ -168,6 +169,16 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
         printf("Host: WebSocket Server listening on port 8080\n");
     } else {
         printf("Host: Failed to start WebSocket Server on 8080\n");
+    }
+
+    // Encryption Setup
+    AES_Ctx aes_ctx;
+    bool encryption_enabled = (password && password[0] != '\0');
+    if (encryption_enabled) {
+        uint8_t key[16];
+        AES_DeriveKey(password, key);
+        AES_Init(&aes_ctx, key);
+        printf("Host: Stream encryption enabled.\n");
     }
     
     // Viewer address tracking - will be updated when we receive punch packets
@@ -356,13 +367,23 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                 Codec_EncodeFrame(encoder, frame, &packet_arena, &pkt);
             
                 if (pkt.size > 0) {
+                    uint32_t current_frame_id = packetizer.frame_id_counter + 1; // Anticipate next ID
+
+                    // Encrypt if pathward is set
+                    if (encryption_enabled) {
+                        uint8_t iv[16] = {0};
+                        uint32_t net_id = htonl(current_frame_id);
+                        memcpy(iv, &net_id, 4); // Use frame_id as IV start
+                        AES_CTR_Xcrypt(&aes_ctx, iv, pkt.data, pkt.size);
+                    }
+
                     // 1. Send via UDP (Original)
                     if (has_viewer) {
                         Protocol_SendFrame(&packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
                     }
                     
                     // 2. Send via WebSocket (New)
-                    WS_Broadcast(ws, pkt.data, pkt.size);
+                    WS_Broadcast(ws, current_frame_id, pkt.data, pkt.size);
                     
                     frames_encoded++;
                     time_since_last_send = 0.0f; // Reset keepalive timer
@@ -398,7 +419,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
 }
 
 // --- VIEWER MODE ---
-int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bool verbose) {
+int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bool verbose, const char *password) {
     (void)verbose;
     printf("Starting VIEWER Mode...\n");
     printf("Viewer: Will send punch packets to host at %s:9999\n", host_ip);
@@ -430,6 +451,16 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     Reassembler audio_reassembler;
     Reassembler_Init(&video_reassembler, arena);
     Reassembler_Init(&audio_reassembler, arena);
+    
+    // Encryption Setup
+    AES_Ctx aes_ctx;
+    bool encryption_enabled = (password && password[0] != '\0');
+    if (encryption_enabled) {
+        uint8_t key[16];
+        AES_DeriveKey(password, key);
+        AES_Init(&aes_ctx, key);
+        printf("Viewer: Decryption enabled.\n");
+    }
     
     // Video Frame for Decoding
     VideoFrame decoded_frame = {0}; 
@@ -546,8 +577,15 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                     }
                     received_any_packet = true;
                 } else if (packet_type == PACKET_TYPE_VIDEO) {
-                    // Decode video
+                    // Decrypt if needed
+                    if (encryption_enabled) {
+                        uint8_t iv[16] = {0};
+                        uint32_t net_id = htonl(video_reassembler.active_buffer.frame_id);
+                        memcpy(iv, &net_id, 4);
+                        AES_CTR_Xcrypt(&aes_ctx, iv, (uint8_t*)frame_data, frame_size);
+                    }
 
+                    // Decode video
                     EncodedPacket pkt = { .data = frame_data, .size = frame_size };
                     Codec_DecodePacket(decoder, &pkt, &decoded_frame);
 
@@ -627,6 +665,7 @@ typedef struct AppConfig {
     bool is_host;
     bool verbose;
     char target_ip[64];
+    char stream_password[64];
     uint32_t selected_audio_node_id; 
     bool start_app;
 } AppConfig;
@@ -650,6 +689,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
     
     // Initialize from saved config (or defaults if first run)
     strcpy(config->target_ip, saved_config->target_ip);
+    strcpy(config->stream_password, saved_config->stream_password);
     config->is_host = saved_config->is_host;
     config->verbose = saved_config->verbose;
     config->selected_audio_node_id = 0; // Default System
@@ -767,11 +807,18 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         
         int input_w = 250;
         UI_CenterNext(input_w);
-        UI_TextInput("ip_input", config->target_ip, 64, 0, cy + 50, input_w, 50);
+        UI_TextInput("ip_input", config->target_ip, 64, 0, cy + 50, input_w, 50, UI_INPUT_NUMERIC);
+        
+        // Password Config
+        UI_CenterNext(0);
+        UI_Label("Stream Password:", 0, cy + 105, 1.8f);
+        
+        UI_CenterNext(input_w);
+        UI_TextInput("pass_input", config->stream_password, 64, 0, cy + 130, input_w, 40, UI_INPUT_PASSWORD);
         
         // Audio Source List
         if (config->is_host) {
-            int audio_y = cy + 120;
+            int audio_y = cy + 180;
             UI_CenterNext(0);
             UI_Label("Audio Source:", 0, audio_y, 2.0f);
             
@@ -797,15 +844,11 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         }
         
         // Adjust Start Button Y position to be below list
-        // List ends at audio_y + 30 + 150 = audio_y + 180 = cy + 300
+        // List ends at audio_y + 30 + 40 = audio_y + 70 = cy + 250
         
         // Start Button
-        // Adjusted Y position for compact dropdown (dropdown ends at audio_y + 30 + 40 = audio_y + 70)
-        // audio_y is cy + 120. So ends at cy + 190.
-        // Button at cy + 220 is good spacing.
-        
         UI_CenterNext(250);
-        if (UI_Button("START HARMONY", 0, cy + 220, 250, 70)) {
+        if (UI_Button("START HARMONY", 0, cy + 260, 250, 70)) {
             config->start_app = true;
             UI_EndFrame();
             OS_SwapBuffers(window);
@@ -858,13 +901,14 @@ int main(int argc, char **argv) {
             saved_config.verbose = config.verbose;
             // saved_config.use_portal_audio = config.use_portal_audio; // Removed for now
             strcpy(saved_config.target_ip, config.target_ip);
+            strcpy(saved_config.stream_password, config.stream_password);
             Config_Save(&saved_config);
             
             int result;
             if (config.is_host) {
-                result = RunHost(&main_arena, window, config.target_ip, config.verbose, config.selected_audio_node_id, saved_config.encoder_preset);
+                result = RunHost(&main_arena, window, config.target_ip, config.verbose, config.selected_audio_node_id, saved_config.encoder_preset, config.stream_password);
             } else {
-                result = RunViewer(&main_arena, window, config.target_ip, config.verbose);
+                result = RunViewer(&main_arena, window, config.target_ip, config.verbose, config.stream_password);
             }
             
             // result == 2 means return to menu (ESC pressed)

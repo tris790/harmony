@@ -26,4 +26,4 @@ todos:
 - [x] update the metadata to only show a circle with a ? centered in it and it shows when mousing over the circle (tooltip)
 - [x] add the framerate and potentially other useful metadata and render them in the viewer
 - [x] improve visual quality of streams. 1080p are a bit pixelated
-- [ ] encrypt the stream 
+- [x] encrypt the stream

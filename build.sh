@@ -40,7 +40,7 @@ fi
 # Source Files
 # We use a Unity Build (Single Translation Unit) approach for fast builds
 # main.c includes everything else
-SOURCES="src/main.c src/platform/generated/xdg-shell-protocol.c src/platform/generated/xdg-decoration-protocol.c src/platform/linux_wayland.c src/platform/linux_portal.c src/platform/capture_pipewire.c src/platform/audio_pipewire.c src/platform/config_linux.c src/codec/codec_ffmpeg.c src/codec/codec_ffmpeg_decode.c src/codec/audio_opus.c src/net/network_udp.c src/net/websocket.c src/ui/render_gl.c src/ui/ui_simple.c"
+SOURCES="src/main.c src/platform/generated/xdg-shell-protocol.c src/platform/generated/xdg-decoration-protocol.c src/platform/linux_wayland.c src/platform/linux_portal.c src/platform/capture_pipewire.c src/platform/audio_pipewire.c src/platform/config_linux.c src/codec/codec_ffmpeg.c src/codec/codec_ffmpeg_decode.c src/codec/audio_opus.c src/net/network_udp.c src/net/websocket.c src/net/aes.c src/ui/render_gl.c src/ui/ui_simple.c"
 
 echo "Building Harmony..."
 gcc $FLAGS $INCLUDES $SOURCES -o build/harmony $LIBS

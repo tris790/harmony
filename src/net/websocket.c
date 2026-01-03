@@ -209,43 +209,49 @@ void WS_Poll(WebSocketContext *ctx) {
     }
 }
 
-void WS_Broadcast(WebSocketContext *ctx, const void *data, size_t size) {
+void WS_Broadcast(WebSocketContext *ctx, uint32_t frame_id, const void *data, size_t size) {
     if (!ctx) return;
     
     // Construct WebSocket Frame
     // FIN=1, Opcode=2 (Binary)
     uint8_t header[10];
     int header_len = 2;
+    size_t total_payload_size = size + 4; // Data + 4 byte frame_id
+    
     header[0] = 0x82; 
     
-    if (size < 126) {
-        header[1] = (uint8_t)size;
-    } else if (size < 65536) {
+    if (total_payload_size < 126) {
+        header[1] = (uint8_t)total_payload_size;
+    } else if (total_payload_size < 65536) {
         header[1] = 126;
-        header[2] = (size >> 8) & 0xFF;
-        header[3] = size & 0xFF;
+        header[2] = (total_payload_size >> 8) & 0xFF;
+        header[3] = total_payload_size & 0xFF;
         header_len = 4;
     } else {
         header[1] = 127;
-        // 64-bit size (only using lower 32 bits effectively)
         header[2] = 0; header[3] = 0; header[4] = 0; header[5] = 0;
-        header[6] = (size >> 24) & 0xFF;
-        header[7] = (size >> 16) & 0xFF;
-        header[8] = (size >> 8) & 0xFF;
-        header[9] = size & 0xFF;
+        header[6] = (total_payload_size >> 24) & 0xFF;
+        header[7] = (total_payload_size >> 16) & 0xFF;
+        header[8] = (total_payload_size >> 8) & 0xFF;
+        header[9] = total_payload_size & 0xFF;
         header_len = 10;
     }
 
+    // Convert frame_id to net byte order
+    uint32_t net_frame_id = htonl(frame_id);
+
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (ctx->clients[i].active && ctx->clients[i].handshake_complete) {
-            struct iovec iov[2];
+            struct iovec iov[3];
             iov[0].iov_base = header;
             iov[0].iov_len = header_len;
-            iov[1].iov_base = (void*)data;
-            iov[1].iov_len = size;
+            iov[1].iov_base = &net_frame_id;
+            iov[1].iov_len = 4;
+            iov[2].iov_base = (void*)data;
+            iov[2].iov_len = size;
 
-            ssize_t total_expected = header_len + size;
-            ssize_t n = writev(ctx->clients[i].sockfd, iov, 2);
+            ssize_t total_expected = header_len + 4 + size;
+            ssize_t n = writev(ctx->clients[i].sockfd, iov, 3);
             
             if (n < total_expected) {
                 if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {

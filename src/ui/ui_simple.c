@@ -367,7 +367,7 @@ void UI_Label(const char *text, int x, int y, float scale) {
     Render_DrawText(text, x, y, scale, 0.90f, 0.90f, 0.95f, 1.0f);
 }
 
-bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, int w, int h) {
+bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, int w, int h, UI_TextInputFlags flags) {
     UI_GetRect(&x, &y, w, h);
     bool hover = UI_IsHovered(x, y, w, h);
     
@@ -404,6 +404,12 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
 
         if (ui.last_char) {
             bool typing = (ui.last_char >= 32 && ui.last_char <= 126);
+            if (typing && (flags & UI_INPUT_NUMERIC)) {
+                if (!((ui.last_char >= '0' && ui.last_char <= '9') || ui.last_char == '.')) {
+                    typing = false;
+                }
+            }
+
             bool backspacing = (ui.last_char == '\b' || ui.last_char == '\x7f' || ui.last_char == '\x11' || ui.last_char == '\x12' || ui.last_char == '\x13' || ui.last_char == '\x14');
             bool editing = (ui.last_char == '\x1a' || ui.last_char == '\x19');
 
@@ -513,16 +519,32 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
         }
     }
 
+    // Prepare display text (handle password masking)
+    char display_buf[256];
+    if (flags & UI_INPUT_PASSWORD) {
+        int len = strlen(buffer);
+        for (int i = 0; i < len && i < 255; i++) display_buf[i] = '*';
+        display_buf[len < 255 ? len : 255] = 0;
+    } else {
+        strncpy(display_buf, buffer, sizeof(display_buf)-1);
+        display_buf[sizeof(display_buf)-1] = 0;
+    }
+
     // Center text vertically
-    // Center text vertically
-    Render_DrawText(buffer, x + 10, y + (h - 18) / 2, 2.25f, UI_COLOR_TEXT_NORMAL[0], UI_COLOR_TEXT_NORMAL[1], UI_COLOR_TEXT_NORMAL[2], UI_COLOR_TEXT_NORMAL[3]);
+    Render_DrawText(display_buf, x + 10, y + (h - 18) / 2, 2.25f, UI_COLOR_TEXT_NORMAL[0], UI_COLOR_TEXT_NORMAL[1], UI_COLOR_TEXT_NORMAL[2], UI_COLOR_TEXT_NORMAL[3]);
 
     // Draw cursor
     if (is_active && (int)(OS_GetTime() * 2) % 2 == 0) {
         char sub[256];
-        int sub_len = (ui.cursor_pos < 255) ? ui.cursor_pos : 255;
-        memcpy(sub, buffer, sub_len);
-        sub[sub_len] = 0;
+        if (flags & UI_INPUT_PASSWORD) {
+            int sub_len = (ui.cursor_pos < 255) ? ui.cursor_pos : 255;
+            for (int i = 0; i < sub_len; i++) sub[i] = '*';
+            sub[sub_len] = 0;
+        } else {
+            int sub_len = (ui.cursor_pos < 255) ? ui.cursor_pos : 255;
+            memcpy(sub, buffer, sub_len);
+            sub[sub_len] = 0;
+        }
         float tw = Render_GetTextWidth(sub, 2.25f);
         float th = 28.0f; // Cursor height
         // Vertically center cursor
