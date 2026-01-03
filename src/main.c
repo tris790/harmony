@@ -37,6 +37,7 @@ typedef struct EncoderThreadContext {
   int viewer_port;
   bool has_viewer;
   OS_Mutex *viewer_mutex;
+  OS_Mutex *packetizer_mutex;
 
   // WebSocket
   WebSocketContext *ws;
@@ -169,6 +170,7 @@ static void EncoderThreadProc(void *data) {
       Codec_EncodeFrame(encoder, frame, &packet_arena, &pkt);
 
       if (pkt.size > 0) {
+        OS_MutexLock(ctx->packetizer_mutex);
         uint32_t current_frame_id = ctx->packetizer.frame_id_counter + 1;
 
         // Encrypt if enabled
@@ -189,6 +191,7 @@ static void EncoderThreadProc(void *data) {
                              Net_SendPacketCallback, &net_cb);
         }
         OS_MutexUnlock(ctx->viewer_mutex);
+        OS_MutexUnlock(ctx->packetizer_mutex);
 
         // Broadcast WebSocket
         WS_Broadcast(ctx->ws, PACKET_TYPE_VIDEO, current_frame_id, pkt.data,
@@ -570,6 +573,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   encoder_ctx.viewer_port = 9999;
   encoder_ctx.has_viewer = false;
   encoder_ctx.viewer_mutex = viewer_mutex;
+  encoder_ctx.packetizer_mutex = packetizer_mutex;
   encoder_ctx.ws = ws;
   encoder_ctx.encryption_enabled = encryption_enabled;
   if (encryption_enabled)
@@ -697,7 +701,6 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
                         frame_count > 0);
 
     OS_SwapBuffers(window);
-    frame_count++;
   }
 
   // Stop Worker Threads
