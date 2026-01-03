@@ -49,6 +49,7 @@ const char* Config_GetPath(void) {
 bool Config_Load(PersistentConfig *config) {
     // Set defaults first
     config->is_host = true;
+    config->verbose = false;
     strcpy(config->target_ip, "127.0.0.1");
     
     const char *path = GetConfigPath();
@@ -79,6 +80,8 @@ bool Config_Load(PersistentConfig *config) {
         
         if (strcmp(key, "is_host") == 0) {
             config->is_host = (strcmp(value, "true") == 0);
+        } else if (strcmp(key, "verbose") == 0) {
+            config->verbose = (strcmp(value, "true") == 0);
         } else if (strcmp(key, "target_ip") == 0) {
             strncpy(config->target_ip, value, sizeof(config->target_ip) - 1);
             config->target_ip[sizeof(config->target_ip) - 1] = '\0';
@@ -86,8 +89,8 @@ bool Config_Load(PersistentConfig *config) {
     }
     
     fclose(f);
-    printf("Config: Loaded from %s (is_host=%s, target_ip=%s)\n", 
-           path, config->is_host ? "true" : "false", config->target_ip);
+    printf("Config: Loaded from %s (is_host=%s, verbose=%s, target_ip=%s)\n", 
+           path, config->is_host ? "true" : "false", config->verbose ? "true" : "false", config->target_ip);
     return true;
 }
 
@@ -105,6 +108,7 @@ bool Config_Save(const PersistentConfig *config) {
     
     fprintf(f, "# Harmony Config\n");
     fprintf(f, "is_host=%s\n", config->is_host ? "true" : "false");
+    fprintf(f, "verbose=%s\n", config->verbose ? "true" : "false");
     fprintf(f, "target_ip=%s\n", config->target_ip);
     
     fclose(f);

@@ -30,7 +30,7 @@ void Net_SendPacketCallback(void *user_data, void *packet_data, size_t packet_si
     Net_Send(d->net, d->dest_ip, d->dest_port, packet_data, packet_size);
 }
 
-int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
+int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose) {
     printf("Starting HOST Mode...\n");
     
     MemoryArena packet_arena;
@@ -211,7 +211,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
                     Protocol_SendFrame(&packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
                     frames_encoded++;
                     time_since_last_send = 0.0f; // Reset keepalive timer
-                    if (frame_count++ % 30 == 0) printf("Host: Sent Frame %d (%zu bytes)\n", frames_encoded, pkt.size);
+                    if (frame_count++ % 30 == 0 && verbose) printf("Host: Sent Frame %d (%zu bytes)\n", frames_encoded, pkt.size);
                 }
             }
         } else {
@@ -235,7 +235,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
 }
 
 // --- VIEWER MODE ---
-int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip) {
+int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bool verbose) {
     printf("Starting VIEWER Mode...\n");
     printf("Viewer: Will send punch packets to host at %s:9999\n", host_ip);
     
@@ -323,7 +323,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip) {
                     
                     // Log frame info periodically
                     if (decoded_frame.width > 0 && decoded_frame.height > 0) {
-                        if (frames_decoded++ % 30 == 0) {
+                        if (frames_decoded++ % 30 == 0 && verbose) {
                             printf("Viewer: Decoded Frame %d (%dx%d) from %s:%d\n", 
                                 frames_decoded, decoded_frame.width, decoded_frame.height, sender_ip, sender_port);
                         }
@@ -385,6 +385,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip) {
 // --- MENU ---
 typedef struct AppConfig {
     bool is_host;
+    bool verbose;
     char target_ip[64];
     bool start_app;
 } AppConfig;
@@ -395,6 +396,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
     // Initialize from saved config (or defaults if first run)
     strcpy(config->target_ip, saved_config->target_ip);
     config->is_host = saved_config->is_host;
+    config->verbose = saved_config->verbose;
     config->start_app = false;
     
     while (OS_ProcessEvents(window)) {
@@ -493,6 +495,8 @@ int main(int argc, char **argv) {
         strcpy(config.target_ip, saved_config.target_ip); // Use saved IP
     }
     
+    config.verbose = saved_config.verbose;
+    
     // Main application loop - allows returning to menu
     while (1) {
         if (!config.start_app) {
@@ -503,14 +507,15 @@ int main(int argc, char **argv) {
         if (config.start_app) {
             // Save config before starting (in case app crashes)
             saved_config.is_host = config.is_host;
+            saved_config.verbose = config.verbose;
             strcpy(saved_config.target_ip, config.target_ip);
             Config_Save(&saved_config);
             
             int result;
             if (config.is_host) {
-                result = RunHost(&main_arena, window, config.target_ip);
+                result = RunHost(&main_arena, window, config.target_ip, config.verbose);
             } else {
-                result = RunViewer(&main_arena, window, config.target_ip);
+                result = RunViewer(&main_arena, window, config.target_ip, config.verbose);
             }
             
             // result == 2 means return to menu (ESC pressed)

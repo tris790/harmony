@@ -6,6 +6,7 @@
 // Persistent configuration - saved between app sessions
 typedef struct PersistentConfig {
     bool is_host;
+    bool verbose;
     char target_ip[64];
 } PersistentConfig;
 
