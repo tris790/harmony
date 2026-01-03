@@ -140,9 +140,10 @@ void UI_EndFrame() {
         // Draw (only if still open)
         if (strlen(ui.open_dropdown_id) > 0) {
             
-            // Draw List Background
-            Render_DrawRoundedRect(x, y_start, ui.dropdown_w, list_h, 8.0f, 0.15f, 0.16f, 0.2f, 1.0f);
-            Render_DrawRect(x, y_start, ui.dropdown_w, list_h, 0.3f, 0.3f, 0.3f, 1.0f); // Border
+            // Draw List Background (#181825 Mantle)
+            Render_DrawRoundedRect(x, y_start, ui.dropdown_w, list_h, 12.0f, 0.09f, 0.09f, 0.15f, 1.0f);
+            // Border (#313244 Surface0)
+            Render_DrawRoundedRect(x, y_start, ui.dropdown_w, list_h, 12.0f, 0.19f, 0.20f, 0.27f, 0.4f); 
             
             // Mouse Wheel Scrolling
             bool mouse_over_overlay = (ui.mouse_x >= x && ui.mouse_x <= x + ui.dropdown_w &&
@@ -173,7 +174,7 @@ void UI_EndFrame() {
                 bool is_selected = (*ui.dropdown_selected_id == ui.dropdown_items[idx].id);
                 
                 if (hover) {
-                    Render_DrawRect(x + 2, item_y, item_active_w - 2, item_h, 0.25f, 0.25f, 0.35f, 1.0f);
+                    Render_DrawRect(x + 5, item_y, item_active_w - 10, item_h, 0.27f, 0.28f, 0.35f, 1.0f); // Hover: #45475a
                     if (ui.mouse_pressed || ui.overlay_consumed_click) {
                         *ui.dropdown_selected_id = ui.dropdown_items[idx].id;
                         ui.open_dropdown_id[0] = '\0'; // Close
@@ -181,7 +182,7 @@ void UI_EndFrame() {
                         ui.overlay_consumed_click = false; // Done
                     }
                 } else if (is_selected) {
-                    Render_DrawRect(x + 2, item_y, item_active_w - 2, item_h, 0.2f, 0.2f, 0.25f, 1.0f);
+                    Render_DrawRect(x + 5, item_y, item_active_w - 10, item_h, 0.35f, 0.36f, 0.44f, 1.0f); // Active: #585b70
                 }
                 
                 // Text
@@ -196,7 +197,7 @@ void UI_EndFrame() {
                     display_text[max_chars - 1] = '.';
                     display_text[max_chars] = '\0';
                 }
-                Render_DrawText(display_text, x + 10, item_y + 6, 1.8f, 0.9f, 0.9f, 0.9f, 1.0f);
+                Render_DrawText(display_text, x + 15, item_y + 6, 1.8f, 0.80f, 0.84f, 0.96f, 1.0f); // Text: #cdd6f4
             }
             
             // Draw Scrollbar
@@ -482,6 +483,7 @@ void UI_DrawStreamStatus(int w, int h, float time, int frames_encoded,
 
 bool UI_Dropdown(const char *id, AudioNodeInfo *items, int count, uint32_t *selected_id, int x, int y, int w, int h) {
     bool is_open = (strcmp(ui.open_dropdown_id, id) == 0);
+    bool just_opened = false;
     
     // Check click on Header
     bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
@@ -501,14 +503,23 @@ bool UI_Dropdown(const char *id, AudioNodeInfo *items, int count, uint32_t *sele
             ui.dropdown_w = w;
             ui.dropdown_header_h = h; // Store height
             ui.dropdown_scroll_offset = 0;
+            just_opened = true;
         }
         ui.mouse_pressed = false; // CONSUME click
     }
     
     // Draw Header
-    // Background
-    Render_DrawRoundedRect(x, y, w, h, 8.0f, 0.1f, 0.1f, 0.14f, 1.0f);
-    Render_DrawRoundedRect(x, y, w, h, 8.0f, 0.3f, 0.3f, 0.35f, 0.2f); // Slight border/overlay
+    // Background (Match UI_Button style)
+    float r = 0.19f; float g = 0.20f; float b = 0.27f; // Normal
+    if (hover && ui.mouse_down) {
+        r = 0.35f; g = 0.36f; b = 0.44f; // Active
+    } else if (hover) {
+        r = 0.27f; g = 0.28f; b = 0.35f; // Hover
+    }
+    
+    Render_DrawRoundedRect(x, y, w, h, 12.0f, r, g, b, 1.0f);
+    // Slight border for depth
+    Render_DrawRoundedRect(x, y, w, h, 12.0f, 0.45f, 0.47f, 0.58f, 0.15f); 
     
     // Find Name of selected
     const char *current_name = "Select Audio Source...";
@@ -531,13 +542,10 @@ bool UI_Dropdown(const char *id, AudioNodeInfo *items, int count, uint32_t *sele
         display_text[max_chars] = '\0';
     }
     
-    Render_DrawText(display_text, x + 10, y + (h/2) - 8, 1.8f, 0.9f, 0.9f, 0.95f, 1.0f);
+    Render_DrawText(display_text, x + 15, y + (h/2) - 8, 1.8f, 0.80f, 0.84f, 0.96f, 1.0f);
     
-    // Chevron Down
-    int cx = x + w - 20;
-    int cy = y + h / 2;
-    Render_DrawRect(cx - 5, cy - 2, 10, 2, 0.7f, 0.7f, 0.8f, 1.0f); // Top bar
-    Render_DrawText("v", cx - 5, cy - 8, 1.5f, 0.7f, 0.7f, 0.8f, 1.0f);
+    // Chevron Down (Lavender: #b4befe)
+    Render_DrawText("v", x + w - 30, y + (h/2) - 10, 1.5f, 0.71f, 0.75f, 1.0f, 1.0f);
 
-    return false; // Selection change handled in EndFrame via pointer
+    return just_opened; 
 }

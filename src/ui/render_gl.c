@@ -384,3 +384,15 @@ void Render_DrawText(const char *text, float x, float y, float scale, float r, f
     }
     glDisable(GL_BLEND);
 }
+
+float Render_GetTextWidth(const char *text, float scale) {
+    if (!text) return 0.0f;
+    int len = 0;
+    const char *p = text;
+    while (*p) {
+        unsigned char c = (unsigned char)*p;
+        if (c >= 32 && c < 128) len++;
+        p++;
+    }
+    return (float)len * 8.0f * scale;
+}

@@ -22,5 +22,6 @@ void Render_DrawRoundedRect(float x, float y, float w, float h, float rad, float
 
 // Draw text (using internal font)
 void Render_DrawText(const char *text, float x, float y, float scale, float r, float g, float b, float a);
+float Render_GetTextWidth(const char *text, float scale);
 
 #endif // HARMONY_RENDER_API_H

@@ -223,10 +223,8 @@ static void registry_event_global(void *data, uint32_t id,
         
         if (is_app) {
              snprintf(node->name, sizeof(node->name), "[App] %s", display_name);
-             printf("AudioEnum: Found App '%s' (GlobalID %u, Serial %u)\n", display_name, id, serial_id);
         } else {
              snprintf(node->name, sizeof(node->name), "[Sys] %s", display_name);
-             printf("AudioEnum: Found Sys '%s' (GlobalID %u, Serial %u)\n", display_name, id, serial_id);
         }
     }
 }

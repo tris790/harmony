@@ -211,7 +211,8 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
             Render_Clear(0.1f, 0.1f, 0.15f, 1.0f);
             char wait_msg[128];
             snprintf(wait_msg, sizeof(wait_msg), "Waiting for viewer at %s:9999...", target_ip);
-            Render_DrawText(wait_msg, w/2 - 200, h/2, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
+            float tw = Render_GetTextWidth(wait_msg, 2.0f);
+            Render_DrawText(wait_msg, (w - tw) / 2.0f, h/2.0f, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
             OS_SwapBuffers(window);
             continue;
         }
@@ -529,7 +530,9 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
             }
         } else {
              Render_Clear(0.1f, 0.1f, 0.1f, 1.0f);
-             Render_DrawText("Waiting for stream...", win_w/2 - 100, win_h/2, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
+             const char *wait_msg = "Waiting for stream...";
+             float tw = Render_GetTextWidth(wait_msg, 2.0f);
+             Render_DrawText(wait_msg, (win_w - tw) / 2.0f, win_h / 2.0f, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
         }
         
         // Don't clear if we drew frame? Or always clear background?
@@ -569,33 +572,16 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
     MemoryArena temp_arena;
     ArenaInit(&temp_arena, 1024 * 1024); // 1MB temp
     AudioNodeList node_list = {0};
-    Audio_EnumerateNodes(&temp_arena, &node_list);
-    
-    // Add "System Default" as first option if not present or explicit 0
-    // Actually our enum might return monitors. 
-    // Let's verify if we need to manually insert "Default (ID 0)".
-    // The previous implementation used ID 0 for default.
-    // Let's prepend a "System Default" option manually in rendering or struct?
-    // Easiest is to add it to the list.
-    
-    // Create new list with +1 slot
-    // Create new list with +11 slots (1 for Default, 10 for Fake testing)
     AudioNodeList full_list = {0};
-    full_list.nodes = ArenaPush(&temp_arena, (node_list.count + 11) * sizeof(AudioNodeInfo));
-    full_list.count = node_list.count + 11;
+    
+    // Initial Enumeration
+    Audio_EnumerateNodes(&temp_arena, &node_list);
+    full_list.nodes = ArenaPush(&temp_arena, (node_list.count + 1) * sizeof(AudioNodeInfo));
+    full_list.count = node_list.count + 1;
     full_list.nodes[0].id = 0;
     strcpy(full_list.nodes[0].name, "[Default] System Audio");
-    
-    // Copy real nodes
     for(int i=0; i<node_list.count; i++) {
         full_list.nodes[i+1] = node_list.nodes[i];
-    }
-
-    // Add 10 Fake nodes for scroll testing
-    for (int i = 0; i < 10; i++) {
-        int idx = node_list.count + 1 + i;
-        full_list.nodes[idx].id = 1000 + i;
-        snprintf(full_list.nodes[idx].name, sizeof(full_list.nodes[idx].name), "Fake Audio Source %d", i + 1);
     }
     
     while (OS_ProcessEvents(window)) {
@@ -622,16 +608,17 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         // Lavender: #b4befe -> 0.71, 0.75, 1.00
         // Scale 4.0 for title
         const char *title = "Harmony Screen Share";
-        int title_len = strlen(title);
-        Render_DrawText(title, cx - (title_len * 16), cy - 250, 4.0f, 0.71f, 0.75f, 1.0f, 1.0f);
+        float title_tw = Render_GetTextWidth(title, 4.0f);
+        Render_DrawText(title, cx - (title_tw / 2.0f), cy - 250, 4.0f, 0.71f, 0.75f, 1.0f, 1.0f);
         
         // Mode Selection Labels (Subtitles)
         // Subtext1: #a6adc8 
-        Render_DrawText("Select Mode:", cx - 200, cy - 180, 2.0f, 0.65f, 0.68f, 0.78f, 1.0f);
+        const char *mode_label = "Select Mode:";
+        float mode_tw = Render_GetTextWidth(mode_label, 2.0f);
+        Render_DrawText(mode_label, cx - (mode_tw / 2.0f), cy - 180, 2.0f, 0.65f, 0.68f, 0.78f, 1.0f);
         
         // Buttons
         // Host Button
-        bool is_host_selected = config->is_host;
         
         // Use different color/style for selected? ui_simple.c handles hover, but we want 'Selected' state visualization
         // We can just draw a selection indicator or rely on the label below.
@@ -652,17 +639,38 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         }
         
         // IP Config
-        Render_DrawText("Target IP Address:", cx - 125, cy + 20, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
-        UI_TextInput("ip_input", config->target_ip, 64, cx - 125, cy + 50, 250, 50);
+        const char *ip_label = "Target IP Address:";
+        float ip_tw = Render_GetTextWidth(ip_label, 2.0f);
+        Render_DrawText(ip_label, cx - (ip_tw / 2.0f), cy + 20, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
+        
+        int input_w = 250;
+        UI_TextInput("ip_input", config->target_ip, 64, cx - (input_w / 2), cy + 50, input_w, 50);
         
         // Audio Source List
         if (config->is_host) {
             int audio_y = cy + 120;
-            Render_DrawText("Audio Source:", cx - 125, audio_y, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
+            const char *audio_label = "Audio Source:";
+            float audio_tw = Render_GetTextWidth(audio_label, 2.0f);
+            Render_DrawText(audio_label, cx - (audio_tw / 2.0f), audio_y, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
             
             // List Widget (Now Dropdown)
-            UI_Dropdown("audio_list", full_list.nodes, full_list.count, &config->selected_audio_node_id, 
-                    cx - 125, audio_y + 30, 400, 40);
+            int dropdown_w = 400;
+            if (UI_Dropdown("audio_list", full_list.nodes, full_list.count, &config->selected_audio_node_id, 
+                    cx - (dropdown_w / 2), audio_y + 30, dropdown_w, 40)) 
+            {
+                // Refresh on open!
+                ArenaClear(&temp_arena);
+                node_list.count = 0;
+                Audio_EnumerateNodes(&temp_arena, &node_list);
+                
+                full_list.nodes = ArenaPush(&temp_arena, (node_list.count + 1) * sizeof(AudioNodeInfo));
+                full_list.count = node_list.count + 1;
+                full_list.nodes[0].id = 0;
+                strcpy(full_list.nodes[0].name, "[Default] System Audio");
+                for(int i=0; i<node_list.count; i++) {
+                    full_list.nodes[i+1] = node_list.nodes[i];
+                }
+            }
         }
         
         // Adjust Start Button Y position to be below list

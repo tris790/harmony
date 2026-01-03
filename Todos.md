@@ -1,20 +1,19 @@
 todos:
-- dont show souce when viewer is selected
-- fix transparent components showing under window
-- make it so highlight of dropdown elements is more accurate
-- fix crash port already in use when re-starting stream
-- dont log for each instead lof found N sources
-- make the dropdown follow styles of the rest of the app
-- center the ui components
-- make the app have a desktop titlebar (use os not ourself in opengl)
-- remove fake audio sources 
-- refresh audio sources on dropdown click (if it is not already case)
-- some app can have multiple audio sources (firefox) is there a better way to handle this? (query metedata or index maybe)
-- center the ui elements
-- refactor the ui_simple.c extract components avoid computing size in each, create base widget components and compose them to create complex widgets
-- change mouse cursor based on what is selected/hovered (make sure to not overwhelm the OS, we are a immediate mode ui so do what is best for this scenario)
-- allow pasting of ip address
-- allow advanced editing in input box (ctrl + delete, holding delete, holding a key to input)
-- add a way for the user to copy is public ip address to give to another user to connect accross the internet
-- rename default system audio to all system audio
-- ajust the character 'r' of the font. the top part of the r is cur (more in the top left of the then the right)
+- [x] dont show souce when viewer is selected
+- [x] fix transparent components showing under window
+- [x] make it so highlight of dropdown elements is more accurate
+- [x] fix crash port already in use when re-starting stream
+- [x] dont log for each instead lof found N sources
+- [x] make the dropdown follow styles of the rest of the app
+- [x] center the ui components (robustly using Render_GetTextWidth)
+- [ ] make the app have a desktop titlebar (use os not ourself in opengl)
+- [x] remove fake audio sources 
+- [x] refresh audio sources on dropdown click (optimized for efficiency)
+- [ ] some app can have multiple audio sources (firefox) is there a better way to handle this? (query metedata or index maybe)
+- [ ] refactor the ui_simple.c extract components avoid computing size in each, create base widget components and compose them to create complex widgets
+- [ ] change mouse cursor based on what is selected/hovered (make sure to not overwhelm the OS, we are a immediate mode ui so do what is best for this scenario)
+- [ ] allow pasting of ip address
+- [ ] allow advanced editing in input box (ctrl + delete, holding delete, holding a key to input)
+- [ ] add a way for the user to copy is public ip address to give to another user to connect accross the internet
+- [ ] rename default system audio to all system audio
+- [ ] ajust the character 'r' of the font. the top part of the r is cur (more in the top left of the then the right)
