@@ -324,9 +324,11 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     
     Render_Init(arena);
     
-    // Reassembler Setup
-    Reassembler reassembler;
-    Reassembler_Init(&reassembler, arena);
+    // Separate reassemblers for video and audio (they use different frame_id sequences)
+    Reassembler video_reassembler;
+    Reassembler audio_reassembler;
+    Reassembler_Init(&video_reassembler, arena);
+    Reassembler_Init(&audio_reassembler, arena);
     
     // Video Frame for Decoding
     VideoFrame decoded_frame = {0}; 
@@ -373,11 +375,24 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         while ((n = Net_Recv(net, buf, sizeof(buf), sender_ip, &sender_port)) > 0) {
             bytes_received_window += n; // Track bandwidth
             
+            // Peek at packet type from header to route to correct reassembler
+            if (n < (int)sizeof(PacketHeader)) continue;
+            PacketHeader *peek_header = (PacketHeader *)buf;
+            uint8_t ptype = peek_header->packet_type;
+            
             void *frame_data = NULL;
             size_t frame_size = 0;
-            
             uint8_t packet_type = 0;
-            ReassemblyResult res = Protocol_HandlePacket(&reassembler, buf, n, &frame_data, &frame_size, &packet_type);
+            ReassemblyResult res;
+            
+            // Route to appropriate reassembler based on packet type
+            if (ptype == PACKET_TYPE_VIDEO || ptype == PACKET_TYPE_METADATA || ptype == PACKET_TYPE_KEEPALIVE) {
+                res = Protocol_HandlePacket(&video_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
+            } else if (ptype == PACKET_TYPE_AUDIO) {
+                res = Protocol_HandlePacket(&audio_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
+            } else {
+                continue; // Unknown type
+            }
             
             if (res == RESULT_COMPLETE) {
                 if (packet_type == PACKET_TYPE_KEEPALIVE) {
@@ -445,8 +460,9 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
             decoded_frame.height = 0;
             stream_meta.screen_width = 0; // Clear metadata too
             
-            // Reset reassembler so it can accept new stream (which starts at frame_id 1)
-            reassembler.active_buffer.frame_id = 0;
+            // Reset reassemblers so they can accept new stream (which starts at frame_id 1)
+            video_reassembler.active_buffer.frame_id = 0;
+            audio_reassembler.active_buffer.frame_id = 0;
         }
         
         // Always draw the latest frame (or waiting screen)
