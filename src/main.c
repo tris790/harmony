@@ -487,21 +487,21 @@ static void UI_DrawMetadataTooltip(WindowContext *window,
                meta->screen_width, meta->screen_height, meta->fps,
                meta->format_name, current_mbps, frames_decoded);
 
-      float scale = 1.5f;
+      float scale = 2.0f;
       float tw1 = Render_GetTextWidth(meta_text, scale);
       float tw2 = Render_GetTextWidth(meta_text2, scale);
       float max_tw = (tw1 > tw2) ? tw1 : tw2;
-      float padding = 10.0f;
+      float padding = 15.0f;
       float rect_w = max_tw + padding * 2.0f;
-      float rect_h = 70.0f;
+      float rect_h = 95.0f;
 
       // Draw tooltip next to the icon
       float tx = icon_x + icon_size + 5.0f;
       float ty = icon_y;
       Render_DrawRect(tx, ty, rect_w, rect_h, 0.0f, 0.0f, 0.0f, 0.8f);
-      Render_DrawText(meta_text, tx + padding, ty + 20, scale, 1.0f, 1.0f, 1.0f,
+      Render_DrawText(meta_text, tx + padding, ty + 35, scale, 1.0f, 1.0f, 1.0f,
                       1.0f);
-      Render_DrawText(meta_text2, tx + padding, ty + 50, scale, 0.8f, 0.8f,
+      Render_DrawText(meta_text2, tx + padding, ty + 70, scale, 0.8f, 0.8f,
                       0.8f, 1.0f);
     }
   } else {
