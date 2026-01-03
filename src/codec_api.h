@@ -10,6 +10,7 @@ typedef struct VideoFormat {
     int height;
     int fps;
     int bitrate;
+    char preset[32]; // x264 preset: ultrafast, superfast, veryfast, faster, fast, medium
 } VideoFormat;
 
 // Raw Video Frame (RGB/YUV)

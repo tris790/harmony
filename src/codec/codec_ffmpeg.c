@@ -38,13 +38,14 @@ EncoderContext* Codec_InitEncoder(MemoryArena *arena, VideoFormat format) {
     ctx->codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
     
     // VBR Rate Control: Allow short bursts for high-motion scenes
-    // rc_max_rate caps instantaneous bitrate to respect network limits
-    // rc_buffer_size (0.5s buffer) allows encoder to "borrow" bits for complex frames
-    ctx->codec_ctx->rc_max_rate = format.bitrate;
-    ctx->codec_ctx->rc_buffer_size = format.bitrate / 2;
+    // rc_max_rate at 1.5x allows encoder headroom for complex frames
+    // rc_buffer_size (1s buffer) allows encoder to "borrow" bits for complex frames
+    ctx->codec_ctx->rc_max_rate = format.bitrate * 3 / 2; // 1.5x burst capacity
+    ctx->codec_ctx->rc_buffer_size = format.bitrate; // 1 second buffer
 
-    // Optional: Tune for low latency
-    av_opt_set(ctx->codec_ctx->priv_data, "preset", "ultrafast", 0);
+    // Encoder preset from config (default: 'faster' for good quality/speed balance)
+    const char *preset = (format.preset[0] != '\0') ? format.preset : "faster";
+    av_opt_set(ctx->codec_ctx->priv_data, "preset", preset, 0);
     av_opt_set(ctx->codec_ctx->priv_data, "tune", "zerolatency", 0);
     
     // CRITICAL for network streaming: Insert SPS/PPS headers with every keyframe

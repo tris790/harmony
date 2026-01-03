@@ -41,22 +41,22 @@ static int CalculateTargetBitrate(int width, int height, int fps) {
     int pixels = width * height;
     bool high_fps = (fps >= 50);
     
-    // Aggressively reduced bitrates to prevent UDP packet loss
+    // Improved bitrates for better visual quality (closer to streaming platform recommendations)
     // 4K (3840x2160 = 8.3M pixels)
     if (pixels >= 8000000) {
-        return high_fps ? 20000000 : 15000000; // 20 or 15 Mbps
+        return high_fps ? 35000000 : 25000000; // 35 or 25 Mbps
     }
     // 1440p (2560x1440 = 3.7M pixels)
     if (pixels >= 3500000) {
-        return high_fps ? 10000000 : 8000000; // 10 or 8 Mbps
+        return high_fps ? 18000000 : 12000000; // 18 or 12 Mbps
     }
     // 1080p (1920x1080 = 2M pixels)
     if (pixels >= 2000000) {
-        return high_fps ? 6000000 : 4000000; // 6 or 4 Mbps
+        return high_fps ? 12000000 : 8000000; // 12 or 8 Mbps
     }
     // 720p (1280x720 = 921k pixels) - Most common
     if (pixels >= 900000) {
-        return high_fps ? 4000000 : 2500000; // 4 or 2.5 Mbps
+        return high_fps ? 7500000 : 5000000; // 7.5 or 5 Mbps
     }
     // Lower resolutions - fallback to formula
     return (int)(width * height * fps * 0.08f);
@@ -107,7 +107,7 @@ static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *
     }
 }
 
-int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id) {
+int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id, const char *encoder_preset) {
     (void)verbose;
     printf("Starting HOST Mode...\n");
     
@@ -147,6 +147,8 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     // Use dynamic bitrate calculation
     int initial_bitrate = CalculateTargetBitrate(1280, 720, 30);
     VideoFormat vfmt = { .width = 1280, .height = 720, .fps = 30, .bitrate = initial_bitrate };
+    strncpy(vfmt.preset, encoder_preset, sizeof(vfmt.preset) - 1);
+    vfmt.preset[sizeof(vfmt.preset) - 1] = '\0';
     EncoderContext *encoder = Codec_InitEncoder(arena, vfmt);
     if (!encoder) return 1;
 
@@ -826,7 +828,7 @@ int main(int argc, char **argv) {
             
             int result;
             if (config.is_host) {
-                result = RunHost(&main_arena, window, config.target_ip, config.verbose, config.selected_audio_node_id);
+                result = RunHost(&main_arena, window, config.target_ip, config.verbose, config.selected_audio_node_id, saved_config.encoder_preset);
             } else {
                 result = RunViewer(&main_arena, window, config.target_ip, config.verbose);
             }

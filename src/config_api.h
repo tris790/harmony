@@ -9,6 +9,7 @@ typedef struct PersistentConfig {
     bool verbose;
     char target_ip[64];
     bool use_portal_audio;
+    char encoder_preset[32]; // x264 preset: ultrafast, superfast, veryfast, faster, fast, medium
 } PersistentConfig;
 
 // Load config from OS-specific location. Returns false if file doesn't exist.
