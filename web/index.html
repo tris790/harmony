@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Harmony Web Viewer</title>
-    <script src="jmuxer.min.js"></script>
+    <title>Harmony Web Viewer</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -390,6 +390,49 @@
 
         let cryptoKey = null;
 
+        // Audio Playback State (Global)
+        let audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        let pcmBuffer = []; // Queue of AudioData or Float32Array chunks
+        let scriptNode = null;
+        let gainNode = audioCtx.createGain();
+        gainNode.connect(audioCtx.destination);
+
+        function initAudioPlayback() {
+            if (scriptNode) return;
+            // ScriptProcessorNode for simple queue-based playback
+            scriptNode = audioCtx.createScriptProcessor(4096, 0, 2);
+            scriptNode.onaudioprocess = (e) => {
+                let outputL = e.outputBuffer.getChannelData(0);
+                let outputR = e.outputBuffer.getChannelData(1);
+                let count = outputL.length;
+
+                let offset = 0;
+                while (offset < count && pcmBuffer.length > 0) {
+                    let chunk = pcmBuffer[0];
+                    let remainingChunk = chunk.length - chunk.offset;
+                    let toCopy = Math.min(count - offset, remainingChunk);
+
+                    for (let i = 0; i < toCopy; i++) {
+                        outputL[offset + i] = chunk.l[chunk.offset + i];
+                        outputR[offset + i] = chunk.r[chunk.offset + i];
+                    }
+
+                    offset += toCopy;
+                    chunk.offset += toCopy;
+                    if (chunk.offset >= chunk.length) {
+                        pcmBuffer.shift();
+                    }
+                }
+
+                // Fill remaining with silence
+                for (let i = offset; i < count; i++) {
+                    outputL[i] = 0;
+                    outputR[i] = 0;
+                }
+            };
+            scriptNode.connect(gainNode);
+        }
+
         // Video Decoder
         const videoDecoder = new VideoDecoder({
             output: (frame) => {
@@ -464,47 +507,7 @@
             let audioPackets = 0;
 
             // Audio Playback State
-            let audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-            let pcmBuffer = []; // Queue of AudioData or Float32Array chunks
-            let scriptNode = null;
-            let gainNode = audioCtx.createGain();
-            gainNode.connect(audioCtx.destination);
 
-            function initAudioPlayback() {
-                if (scriptNode) return;
-                // ScriptProcessorNode for simple queue-based playback
-                scriptNode = audioCtx.createScriptProcessor(4096, 0, 2);
-                scriptNode.onaudioprocess = (e) => {
-                    let outputL = e.outputBuffer.getChannelData(0);
-                    let outputR = e.outputBuffer.getChannelData(1);
-                    let count = outputL.length;
-
-                    let offset = 0;
-                    while (offset < count && pcmBuffer.length > 0) {
-                        let chunk = pcmBuffer[0];
-                        let remainingChunk = chunk.length - chunk.offset;
-                        let toCopy = Math.min(count - offset, remainingChunk);
-
-                        for (let i = 0; i < toCopy; i++) {
-                            outputL[offset + i] = chunk.l[chunk.offset + i];
-                            outputR[offset + i] = chunk.r[chunk.offset + i];
-                        }
-
-                        offset += toCopy;
-                        chunk.offset += toCopy;
-                        if (chunk.offset >= chunk.length) {
-                            pcmBuffer.shift();
-                        }
-                    }
-
-                    // Fill remaining with silence
-                    for (let i = offset; i < count; i++) {
-                        outputL[i] = 0;
-                        outputR[i] = 0;
-                    }
-                };
-                scriptNode.connect(gainNode);
-            }
 
             const volumeSlider = document.getElementById('volume-slider');
             volumeSlider.addEventListener('input', () => {
@@ -672,6 +675,12 @@
         }
 
         connectBtn.addEventListener('click', () => {
+            // Initialize audio context on user interaction (button click)
+            initAudioPlayback();
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
             targetHost = hostInput.value.trim();
             if (targetHost) {
                 localStorage.setItem('harmony_host', targetHost);
