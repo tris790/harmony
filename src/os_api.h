@@ -42,6 +42,9 @@ bool OS_IsEscapePressed(void);
 // Returns true if F11 was pressed (consumes the press)
 bool OS_IsF11Pressed(void);
 
+// Returns true if Enter was pressed (consumes the press)
+bool OS_IsEnterPressed(void);
+
 void OS_SetFullscreen(WindowContext *window, bool fullscreen);
 
 // Cursor

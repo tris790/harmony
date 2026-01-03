@@ -744,6 +744,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         char c = OS_GetLastChar(window);
         bool paste = OS_IsPastePressed();
         bool ctrl = OS_IsCtrlDown();
+        bool enter = OS_IsEnterPressed();
         
         UI_BeginFrame(w, h, mx, my, mdown, mscroll, c, paste, ctrl);
         
@@ -870,7 +871,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         
         // Start Button
         UI_CenterNext(250);
-        if (UI_Button("START HARMONY", 0, cy + 260, 250, 70)) {
+        if (UI_Button("START HARMONY", 0, cy + 260, 250, 70) || enter) {
             config->start_app = true;
             UI_EndFrame();
             OS_SwapBuffers(window);
