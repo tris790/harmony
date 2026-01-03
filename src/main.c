@@ -523,9 +523,17 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                 snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FMT: %s | RX: %.1f Mbps | Frames: %d", 
                     stream_meta.screen_width, stream_meta.screen_height, stream_meta.format_name, current_mbps, frames_decoded);
 
-                Render_DrawRect(10, 10, 600, 80, 0.0f, 0.0f, 0.0f, 0.7f); // Transparent black box
-                Render_DrawText(meta_text, 20, 30, 1.5f, 1.0f, 1.0f, 1.0f, 1.0f);
-                Render_DrawText(meta_text2, 20, 60, 1.5f, 0.8f, 0.8f, 0.8f, 1.0f);
+                float scale = 1.5f;
+                float tw1 = Render_GetTextWidth(meta_text, scale);
+                float tw2 = Render_GetTextWidth(meta_text2, scale);
+                float max_tw = (tw1 > tw2) ? tw1 : tw2;
+                float padding = 10.0f;
+                float rect_w = max_tw + padding * 2.0f;
+                float rect_h = 70.0f;
+
+                Render_DrawRect(10, 10, rect_w, rect_h, 0.0f, 0.0f, 0.0f, 0.7f); // Transparent black box
+                Render_DrawText(meta_text, 10 + padding, 30, scale, 1.0f, 1.0f, 1.0f, 1.0f);
+                Render_DrawText(meta_text2, 10 + padding, 60, scale, 0.8f, 0.8f, 0.8f, 1.0f);
             }
         } else {
              Render_Clear(0.1f, 0.1f, 0.1f, 1.0f);
