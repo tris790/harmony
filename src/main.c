@@ -85,8 +85,8 @@ static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *
         char meta_text[256];
         snprintf(meta_text, sizeof(meta_text), "HOST: %s | %s", meta->os_name, meta->de_name);
         char meta_text2[256];
-        snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FMT: %s | RX: %.1f Mbps | Frames: %d", 
-            meta->screen_width, meta->screen_height, meta->format_name, current_mbps, frames_decoded);
+        snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FPS: %u | FMT: %s | RX: %.1f Mbps | Frames: %d", 
+            meta->screen_width, meta->screen_height, meta->fps, meta->format_name, current_mbps, frames_decoded);
 
         float scale = 1.5f;
         float tw1 = Render_GetTextWidth(meta_text, scale);
@@ -174,6 +174,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     // Width/Height set in loop
     strcpy(metadata.format_name, "BGRx");
     strcpy(metadata.color_space, "sRGB");
+    metadata.fps = vfmt.fps;
 
     int frame_count = 0;
     int frames_encoded = 0;

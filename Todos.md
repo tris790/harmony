@@ -23,5 +23,6 @@ todos:
 - [x]  show the ip address should be centered with or without showing the public ip (and with the copy btn)
 - [x] add f11 to fullscreen the viewer (toggle)
 - [x] update the viewer metadata (use get text lenght because text overflows the window but the rectangle should adapt to the text)
-- [ ] update the metadata to only show a circle with a ? centered in it and it shows when mousing over the circle (tooltip)
+- [x] update the metadata to only show a circle with a ? centered in it and it shows when mousing over the circle (tooltip)
 - [ ] add the framerate and potentially other useful metadata and render them in the viewer
+- [ ] improve visual quality of streams. 1080p are a bit pixelated

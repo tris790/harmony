@@ -33,6 +33,7 @@ typedef struct StreamMetadata {
     char de_name[32];
     uint32_t screen_width;
     uint32_t screen_height;
+    uint32_t fps;
     char format_name[16]; // e.g. "BGRx"
     char color_space[16]; // e.g. "sRGB"
 } StreamMetadata;
