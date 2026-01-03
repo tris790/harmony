@@ -2,8 +2,12 @@
 #include <wayland-egl.h>
 #include <EGL/egl.h>
 #include <GL/gl.h>
+#include <wayland-cursor.h>
 #include <unistd.h>
 #include <linux/input.h>
+#include "../ui_api.h"
+#include "../os_api.h"
+#include "../audio_api.h"
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
@@ -26,6 +30,7 @@ static struct wl_compositor *compositor;
 static struct xdg_wm_base *wm_base;
 static struct zxdg_decoration_manager_v1 *decoration_manager;
 static struct wl_seat *seat;
+static struct wl_shm *shm;
 
 // --- Input Globals ---
 static struct wl_pointer *g_pointer = NULL;
@@ -33,6 +38,12 @@ static double g_mouse_x = 0;
 static double g_mouse_y = 0;
 static bool g_mouse_left_down = false;
 static double g_mouse_scroll_delta = 0;
+
+static struct wl_cursor_theme *g_cursor_theme = NULL;
+static struct wl_cursor *g_cursors[OS_CURSOR_COUNT] = {0};
+static struct wl_surface *g_cursor_surface = NULL;
+static uint32_t g_last_pointer_serial = 0;
+static OS_CursorType g_current_cursor_type = OS_CURSOR_ARROW;
 
 // --- Window Context ---
 struct WindowContext {
@@ -162,8 +173,12 @@ static const struct wl_keyboard_listener keyboard_listener = {
 
 // --- Pointer Listeners ---
 static void pointer_enter(void *data, struct wl_pointer *wl_pointer, uint32_t serial, struct wl_surface *surface, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+    g_last_pointer_serial = serial;
     g_mouse_x = wl_fixed_to_double(surface_x);
     g_mouse_y = wl_fixed_to_double(surface_y);
+    
+    // Set initial cursor
+    OS_SetCursor(NULL, g_current_cursor_type);
 }
 
 static void pointer_leave(void *data, struct wl_pointer *wl_pointer, uint32_t serial, struct wl_surface *surface) {
@@ -175,6 +190,7 @@ static void pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t t
 }
 
 static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+    g_last_pointer_serial = serial;
     if (button == BTN_LEFT) {
         g_mouse_left_down = (state == WL_POINTER_BUTTON_STATE_PRESSED);
     }
@@ -241,6 +257,8 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         wl_seat_add_listener(seat, &seat_listener, NULL);
     } else if (strcmp(interface, zxdg_decoration_manager_v1_interface.name) == 0) {
         decoration_manager = wl_registry_bind(registry, name, &zxdg_decoration_manager_v1_interface, 1);
+    } else if (strcmp(interface, wl_shm_interface.name) == 0) {
+        shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
     }
 }
 
@@ -351,7 +369,38 @@ WindowContext* OS_CreateWindow(MemoryArena *arena, int width, int height, const 
     wl_display_roundtrip(display);
     
     printf("Wayland Window Created: %dx%d\n", width, height);
+
+    if (!g_cursor_theme) {
+        g_cursor_theme = wl_cursor_theme_load(NULL, 24, shm);
+        if (g_cursor_theme) {
+            g_cursors[OS_CURSOR_ARROW] = wl_cursor_theme_get_cursor(g_cursor_theme, "left_ptr");
+            g_cursors[OS_CURSOR_HAND] = wl_cursor_theme_get_cursor(g_cursor_theme, "hand2");
+            if (!g_cursors[OS_CURSOR_HAND]) g_cursors[OS_CURSOR_HAND] = wl_cursor_theme_get_cursor(g_cursor_theme, "pointer");
+            g_cursors[OS_CURSOR_TEXT] = wl_cursor_theme_get_cursor(g_cursor_theme, "xterm");
+            if (!g_cursors[OS_CURSOR_TEXT]) g_cursors[OS_CURSOR_TEXT] = wl_cursor_theme_get_cursor(g_cursor_theme, "ibeam");
+        }
+        g_cursor_surface = wl_compositor_create_surface(compositor);
+    }
+
     return win;
+}
+
+void OS_SetCursor(WindowContext *window, OS_CursorType type) {
+    g_current_cursor_type = type;
+    if (!g_pointer || !g_cursor_surface || type >= OS_CURSOR_COUNT) return;
+
+    struct wl_cursor *cursor = g_cursors[type];
+    if (!cursor) cursor = g_cursors[OS_CURSOR_ARROW];
+    if (!cursor) return;
+
+    struct wl_cursor_image *image = cursor->images[0];
+    struct wl_buffer *buffer = wl_cursor_image_get_buffer(image);
+    if (!buffer) return;
+
+    wl_pointer_set_cursor(g_pointer, g_last_pointer_serial, g_cursor_surface, image->hotspot_x, image->hotspot_y);
+    wl_surface_attach(g_cursor_surface, buffer, 0, 0);
+    wl_surface_damage(g_cursor_surface, 0, 0, image->width, image->height);
+    wl_surface_commit(g_cursor_surface);
 }
 
 bool OS_ProcessEvents(WindowContext *window) {

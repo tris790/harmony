@@ -1,4 +1,5 @@
 #include "../ui_api.h"
+#include "../os_api.h"
 #include "../audio_api.h"
 #include "render_api.h"
 #include <stdio.h>
@@ -31,6 +32,8 @@ typedef struct UIContext {
     int dropdown_header_h; // Store header height to offset list
     int mouse_scroll;
     bool overlay_consumed_click; 
+    
+    OS_CursorType next_cursor;
 } UIContext;
 
 static UIContext ui;
@@ -86,6 +89,7 @@ void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y
     ui.last_char = input_char;
     
     ui.next_centered = false;
+    ui.next_cursor = OS_CURSOR_ARROW;
 
     if (ui.mouse_pressed) {
         ui.active_id = NULL; 
@@ -163,6 +167,8 @@ void UI_EndFrame() {
                 bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + item_active_w &&
                               ui.mouse_y >= item_y && ui.mouse_y <= item_y + item_h);
                 
+                if (hover) ui.next_cursor = OS_CURSOR_HAND;
+                
                 bool is_selected = (*ui.dropdown_selected_id == ui.dropdown_items[idx].id);
                 
                 if (hover) {
@@ -220,6 +226,8 @@ bool UI_Button(const char *text, int x, int y, int w, int h) {
     bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
                   ui.mouse_y >= y && ui.mouse_y <= y + h);
     
+    if (hover) ui.next_cursor = OS_CURSOR_HAND;
+    
     float r, g, b;
     if (hover && ui.mouse_down) {
          r = 0.35f; g = 0.36f; b = 0.44f;
@@ -260,8 +268,11 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
     bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
                   ui.mouse_y >= y && ui.mouse_y <= y + h);
     
-    if (hover && ui.mouse_pressed) {
-        ui.active_id = id;
+    if (hover) {
+        ui.next_cursor = OS_CURSOR_TEXT;
+        if (ui.mouse_pressed) {
+            ui.active_id = id;
+        }
     }
     
     bool is_active = (ui.active_id == id);
@@ -323,6 +334,8 @@ bool UI_List(const char *id, AudioNodeInfo *items, int count, uint32_t *selected
         
         bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
                       ui.mouse_y >= item_y && ui.mouse_y <= item_y + item_h);
+        
+        if (hover) ui.next_cursor = OS_CURSOR_HAND;
         
         bool is_selected = (*selected_id == items[i].id);
         
@@ -425,22 +438,25 @@ bool UI_Dropdown(const char *id, AudioNodeInfo *items, int count, uint32_t *sele
     bool hover = (ui.mouse_x >= x && ui.mouse_x <= x + w &&
                   ui.mouse_y >= y && ui.mouse_y <= y + h);
     
-    if (hover && ui.mouse_pressed) {
-        if (is_open) {
-            ui.open_dropdown_id[0] = '\0'; 
-        } else {
-            strncpy(ui.open_dropdown_id, id, sizeof(ui.open_dropdown_id)-1);
-            ui.dropdown_items = items;
-            ui.dropdown_count = count;
-            ui.dropdown_selected_id = selected_id;
-            ui.dropdown_x = x;
-            ui.dropdown_y = y;
-            ui.dropdown_w = w;
-            ui.dropdown_header_h = h; 
-            ui.dropdown_scroll_offset = 0;
-            just_opened = true;
+    if (hover) {
+        ui.next_cursor = OS_CURSOR_HAND;
+        if (ui.mouse_pressed) {
+            if (is_open) {
+                ui.open_dropdown_id[0] = '\0'; 
+            } else {
+                strncpy(ui.open_dropdown_id, id, sizeof(ui.open_dropdown_id)-1);
+                ui.dropdown_items = items;
+                ui.dropdown_count = count;
+                ui.dropdown_selected_id = selected_id;
+                ui.dropdown_x = x;
+                ui.dropdown_y = y;
+                ui.dropdown_w = w;
+                ui.dropdown_header_h = h; 
+                ui.dropdown_scroll_offset = 0;
+                just_opened = true;
+            }
+            ui.mouse_pressed = false; 
         }
-        ui.mouse_pressed = false; 
     }
     
     float r = 0.19f; float g = 0.20f; float b = 0.27f; 

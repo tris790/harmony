@@ -39,4 +39,14 @@ char OS_GetLastChar(WindowContext *window);
 // Returns true if ESC was pressed (consumes the press)
 bool OS_IsEscapePressed(void);
 
+// Cursor
+typedef enum {
+    OS_CURSOR_ARROW,
+    OS_CURSOR_HAND,
+    OS_CURSOR_TEXT,
+    OS_CURSOR_COUNT
+} OS_CursorType;
+
+void OS_SetCursor(WindowContext *window, OS_CursorType cursor);
+
 #endif // HARMONY_OS_API_H
