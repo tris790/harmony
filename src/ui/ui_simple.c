@@ -76,11 +76,12 @@ static const float UI_DROPDOWN_BG_FRONT[4]       = {0.19f, 0.20f, 0.27f, 0.4f};
 
 static void UI_GetRect(int *x, int *y, int w, int h) {
     (void)y; // Unused
-    (void)w; // Unused (uses ui.next_centered_w variable if centered)
     (void)h; // Unused
     if (ui.next_centered) {
-        *x = (ui.window_width - ui.next_centered_w) / 2;
+        int width_to_use = (ui.next_centered_w > 0) ? ui.next_centered_w : w;
+        *x = (ui.window_width - width_to_use) / 2;
         ui.next_centered = false;
+        ui.next_centered_w = 0;
     }
 }
 

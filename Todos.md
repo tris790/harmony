@@ -19,5 +19,5 @@ todos:
 - [x] fix dropdown text elements overflowing the dropdown
 - [x] refactor the ui_simple.c extract components avoid computing size in each, create base widget components and compose them to create complex widgets
 - [x] fix warnings when compiling
-- [ ] add arena and update malloc/etc usages (if any) to use that global arena or the scoped arena
-- [ ]  show the ip address should be centered with or without showing the public ip (and with the copy btn)
+- [x] add arena and update malloc/etc usages (if any) to use that global arena or the scoped arena
+- [x]  show the ip address should be centered with or without showing the public ip (and with the copy btn)

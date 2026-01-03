@@ -69,9 +69,6 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     MemoryArena packet_arena;
     ArenaInit(&packet_arena, 32 * 1024 * 1024);
 
-    // Initialize the renderer for status UI
-    Render_Init(arena);
-
     // Request Screen Share Permissions
     printf("Requesting Screen Share... Please acknowledge dialog.\n");
     uint32_t video_node_id = 0;
@@ -344,8 +341,6 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     if (!audio_decoder || !audio_playback) {
         printf("Viewer: Audio initialization failed (continuing without audio)\n");
     }
-    
-    Render_Init(arena);
     
     // Separate reassemblers for video and audio (they use different frame_id sequences)
     Reassembler video_reassembler;
@@ -660,7 +655,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         
         int ip_y = cy - 40;
         if (!ip_fetched) {
-            UI_CenterNext(0); // Auto width will be handled by UI_Button
+            UI_CenterNext(0); 
             if (UI_Button("Show Public IP", 0, ip_y, 160, 30)) {
                 GetPublicIP(public_ip, sizeof(public_ip));
                 if (strlen(public_ip) > 0) {
@@ -672,11 +667,16 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
             char buf[128];
             snprintf(buf, sizeof(buf), "Public IP: %s", public_ip);
             float tw = Render_GetTextWidth(buf, 1.8f);
-            int label_x = cx - (int)tw / 2;
-            Render_DrawText(buf, label_x, ip_y + 5, 1.8f, 0.9f, 0.9f, 0.95f, 1.0f);
+            int copy_btn_w = 80;
+            int gap = 10;
+            int total_w = (int)tw + gap + copy_btn_w;
+            
+            int start_x = cx - total_w / 2;
+            
+            Render_DrawText(buf, start_x, ip_y + 5, 1.8f, 0.9f, 0.9f, 0.95f, 1.0f);
             
             // Copy Button next to it
-            if (UI_Button(ip_copied ? "Copied!" : "Copy", cx + (int)tw/2 + 10, ip_y, 80, 30)) {
+            if (UI_Button(ip_copied ? "Copied!" : "Copy", start_x + (int)tw + gap, ip_y, copy_btn_w, 30)) {
                 OS_SetClipboardText(public_ip);
                 ip_copied = true;
             }
@@ -746,6 +746,9 @@ int main(int argc, char **argv) {
 
     WindowContext *window = OS_CreateWindow(&main_arena, 1280, 720, "Harmony Screen Share");
     if (!window) return 1;
+    
+    // Initialize the renderer once for the entire application session
+    Render_Init(&main_arena);
     
     // Load saved configuration
     PersistentConfig saved_config;
