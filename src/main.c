@@ -55,22 +55,21 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
     EncoderContext *encoder = Codec_InitEncoder(arena, vfmt);
     if (!encoder) return 1;
 
-    // Network Setup - Host binds to port 9998 to receive punch packets from viewers
-    // and sends to viewer's actual source address (discovered from punch packet)
-    NetworkContext *send_net = Net_Init(arena, 0, false);  // For sending
-    NetworkContext *recv_net = Net_Init(arena, 9998, true); // For receiving punch packets
-    if (!recv_net) {
-        printf("Host: Failed to bind port 9998 for receiving.\n");
+    // Network Setup - Single socket on port 9999 for both sending and receiving
+    // This enables symmetric UDP hole punching through firewalls
+    NetworkContext *net = Net_Init(arena, 9999, true);
+    if (!net) {
+        printf("Host: Failed to bind port 9999.\n");
         return 1;
     }
     
     // Viewer address tracking - will be updated when we receive punch packets
     char viewer_ip[16] = {0};
-    int viewer_port = 0;
+    int viewer_port = 9999;  // Viewer listens on 9999
     bool has_viewer = false;
     
-    // Fallback to target_ip if no punch received (for backwards compatibility)
-    NetCallbackData net_cb = { .net = send_net, .dest_ip = target_ip, .dest_port = 9999 };
+    // Send to target_ip:9999 (updated when we receive punch from viewer)
+    NetCallbackData net_cb = { .net = net, .dest_ip = target_ip, .dest_port = 9999 };
     Packetizer packetizer = {0};
 
     // Stream Metadata
@@ -91,6 +90,10 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
     float time_since_last_send = 0.0f;
     const float KEEPALIVE_INTERVAL = 0.5f; // Send keepalive every 500ms if no frames
     
+    // Host punch - send punch to viewer to open our firewall for their punch  
+    float time_since_host_punch = 0.0f;
+    const float HOST_PUNCH_INTERVAL = 0.5f;
+    
     while (OS_ProcessEvents(window)) {
         // Check for ESC to return to menu
         if (OS_IsEscapePressed()) {
@@ -106,23 +109,28 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
         // Update elapsed time for animations (~30fps assumed)
         elapsed_time += 1.0f / 30.0f;
         
-        // Check for punch packets from viewers (UDP hole punching)
+        // Send punch to viewer to open our firewall for their punch (same socket)
+        time_since_host_punch += 1.0f / 30.0f;
+        if (time_since_host_punch >= HOST_PUNCH_INTERVAL) {
+            Protocol_SendPunch(&packetizer, Net_SendPacketCallback, &net_cb);
+            time_since_host_punch = 0.0f;
+        }
+        
+        // Check for punch packets from viewers (receive on same socket)
         {
             uint8_t punch_buf[64];
             char incoming_ip[16];
             int incoming_port;
             int n;
-            while ((n = Net_Recv(recv_net, punch_buf, sizeof(punch_buf), incoming_ip, &incoming_port)) > 0) {
+            while ((n = Net_Recv(net, punch_buf, sizeof(punch_buf), incoming_ip, &incoming_port)) > 0) {
                 if (n >= (int)sizeof(PacketHeader)) {
                     PacketHeader *hdr = (PacketHeader *)punch_buf;
                     if (hdr->packet_type == PACKET_TYPE_PUNCH) {
                         // Viewer is sending punch packets - update our target to their source address
-                        if (!has_viewer || strcmp(viewer_ip, incoming_ip) != 0 || viewer_port != incoming_port) {
+                        if (!has_viewer || strcmp(viewer_ip, incoming_ip) != 0) {
                             strncpy(viewer_ip, incoming_ip, sizeof(viewer_ip) - 1);
-                            viewer_port = 9999;  // We send to viewer's listening port, not their source port
                             has_viewer = true;
                             net_cb.dest_ip = viewer_ip;
-                            net_cb.dest_port = 9999;
                             printf("Host: Received punch from %s, sending to %s:%d\n", incoming_ip, viewer_ip, viewer_port);
                         }
                     }
@@ -205,21 +213,19 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip) {
 // --- VIEWER MODE ---
 int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip) {
     printf("Starting VIEWER Mode...\n");
-    printf("Viewer: Will send punch packets to host at %s:9998\n", host_ip);
+    printf("Viewer: Will send punch packets to host at %s:9999\n", host_ip);
     
-    // Listen on Port 9999 for incoming data
+    // Single socket on Port 9999 for both receiving data and sending punch
+    // This enables symmetric UDP hole punching through firewalls
     NetworkContext *net = Net_Init(arena, 9999, true);
     if (!net) {
         printf("Failed to bind port 9999.\n");
         return 1;
     }
     
-    // Separate network context for sending punch packets to host
-    NetworkContext *punch_net = Net_Init(arena, 0, false);
+    // Punch setup - use same socket, send to host port 9999
     Packetizer punch_packetizer = {0};
-    
-    // Setup for sending punch to host
-    NetCallbackData punch_cb = { .net = punch_net, .dest_ip = host_ip, .dest_port = 9998 };
+    NetCallbackData punch_cb = { .net = net, .dest_ip = host_ip, .dest_port = 9999 };
     
     DecoderContext *decoder = Codec_InitDecoder(arena);
     if (!decoder) return 1;
