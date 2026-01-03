@@ -2,6 +2,7 @@
 #include "codec_api.h"
 #include "network_api.h"
 #include "capture_api.h"
+#include "audio_api.h"
 #include "ui/render_api.h"
 #include "ui_api.h"
 #include "config_api.h"
@@ -31,12 +32,33 @@ void Net_SendPacketCallback(void *user_data, void *packet_data, size_t packet_si
 }
 
 // Calculate target bitrate based on resolution and framerate.
-// Uses a quality factor of ~0.25 bits per pixel.
+// Uses industry-standard recommendations (YouTube/Twitch/OBS 2024):
+// 720p30: 5 Mbps, 720p60: 7.5 Mbps
+// 1080p30: 8 Mbps, 1080p60: 12 Mbps
+// 1440p60: 24 Mbps
+// 4K30: 35 Mbps, 4K60: 50 Mbps
 static int CalculateTargetBitrate(int width, int height, int fps) {
-    // 0.25 bits/pixel gives good quality for ultrafast preset
-    // 720p30: 1280*720*30*0.25 = ~6.9 Mbps
-    // 1080p30: 1920*1080*30*0.25 = ~15.5 Mbps
-    return (int)(width * height * fps * 0.25f);
+    int pixels = width * height;
+    bool high_fps = (fps >= 50);
+    
+    // 4K (3840x2160 = 8.3M pixels)
+    if (pixels >= 8000000) {
+        return high_fps ? 50000000 : 35000000; // 50 or 35 Mbps
+    }
+    // 1440p (2560x1440 = 3.7M pixels)
+    if (pixels >= 3500000) {
+        return high_fps ? 24000000 : 16000000; // 24 or 16 Mbps
+    }
+    // 1080p (1920x1080 = 2M pixels)
+    if (pixels >= 2000000) {
+        return high_fps ? 12000000 : 8000000; // 12 or 8 Mbps
+    }
+    // 720p (1280x720 = 921k pixels)
+    if (pixels >= 900000) {
+        return high_fps ? 7500000 : 5000000; // 7.5 or 5 Mbps
+    }
+    // Lower resolutions - fallback to formula
+    return (int)(width * height * fps * 0.15f);
 }
 
 int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose) {
@@ -59,6 +81,13 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     
     CaptureContext *capture = Capture_Init(arena, node_id);
     if (!capture) return 1;
+
+    // Audio capture and encoding
+    AudioCaptureContext *audio_capture = Audio_InitCapture(arena);
+    AudioEncoder *audio_encoder = Audio_InitEncoder(arena);
+    if (!audio_capture || !audio_encoder) {
+        printf("Host: Audio initialization failed (continuing without audio)\n");
+    }
 
     // Use dynamic bitrate calculation
     int initial_bitrate = CalculateTargetBitrate(1280, 720, 30);
@@ -180,6 +209,19 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
 
         Capture_Poll(capture);
         
+        // Poll and send audio
+        if (audio_capture && audio_encoder) {
+            Audio_PollCapture(audio_capture);
+            AudioFrame *aframe = Audio_GetCapturedFrame(audio_capture);
+            if (aframe) {
+                EncodedAudio encoded_audio = {0};
+                Audio_Encode(audio_encoder, aframe, &encoded_audio);
+                if (encoded_audio.size > 0) {
+                    Protocol_SendAudio(&packetizer, encoded_audio.data, encoded_audio.size, Net_SendPacketCallback, &net_cb);
+                }
+            }
+        }
+        
         VideoFrame *frame = Capture_GetFrame(capture);
         if (frame) {
             has_started_capturing = true; // Once we get a frame, we're capturing
@@ -266,6 +308,13 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     DecoderContext *decoder = Codec_InitDecoder(arena);
     if (!decoder) return 1;
     
+    // Audio decoding and playback
+    AudioDecoder *audio_decoder = Audio_InitDecoder(arena);
+    AudioPlaybackContext *audio_playback = Audio_InitPlayback(arena);
+    if (!audio_decoder || !audio_playback) {
+        printf("Viewer: Audio initialization failed (continuing without audio)\n");
+    }
+    
     Render_Init(arena);
     
     // Reassembler Setup
@@ -332,7 +381,17 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                          memcpy(&stream_meta, frame_data, sizeof(StreamMetadata));
                      }
                      received_any_packet = true;
-                } else {
+                } else if (packet_type == PACKET_TYPE_AUDIO) {
+                    // Decode and play audio
+                    if (audio_decoder && audio_playback) {
+                        AudioFrame audio_frame = {0};
+                        Audio_Decode(audio_decoder, frame_data, frame_size, &audio_frame);
+                        if (audio_frame.sample_count > 0) {
+                            Audio_WritePlayback(audio_playback, &audio_frame);
+                        }
+                    }
+                    received_any_packet = true;
+                } else if (packet_type == PACKET_TYPE_VIDEO) {
                     // 2. Decode
                     EncodedPacket pkt = { .data = frame_data, .size = frame_size };
                     
@@ -350,6 +409,11 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                     }
                 }
             }
+        }
+        
+        // Poll audio playback to push buffered audio to output
+        if (audio_playback) {
+            Audio_PollPlayback(audio_playback);
         }
         
         // Update bandwidth measurement

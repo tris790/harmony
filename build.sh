@@ -13,11 +13,11 @@ mkdir -p build
 FLAGS="-g -O0 -Wall -Wextra -Wno-unused-function"
 
 # Libraries
-# FFmpeg, Wayland, PipeWire, DBus
-LIBS="-lavcodec -lavformat -lavutil -lswscale -lwayland-client -lwayland-egl -lEGL -lGL -lxkbcommon -lm $(pkg-config --libs libpipewire-0.3 dbus-1)"
+# FFmpeg, Wayland, PipeWire, DBus, Opus
+LIBS="-lavcodec -lavformat -lavutil -lswscale -lwayland-client -lwayland-egl -lEGL -lGL -lxkbcommon -lm -lopus $(pkg-config --libs libpipewire-0.3 dbus-1)"
 
 # Includes
-INCLUDES="-Isrc $(pkg-config --cflags libpipewire-0.3 dbus-1)"
+INCLUDES="-Isrc $(pkg-config --cflags libpipewire-0.3 dbus-1 opus)"
 
 # Wayland Protocols
 PROTO_DIR="/usr/share/wayland-protocols/stable/xdg-shell"
@@ -33,7 +33,7 @@ fi
 # Source Files
 # We use a Unity Build (Single Translation Unit) approach for fast builds
 # main.c includes everything else
-SOURCES="src/main.c src/platform/generated/xdg-shell-protocol.c src/platform/linux_wayland.c src/platform/linux_portal.c src/platform/capture_pipewire.c src/platform/config_linux.c src/codec/codec_ffmpeg.c src/codec/codec_ffmpeg_decode.c src/net/network_udp.c src/ui/render_gl.c src/ui/ui_simple.c"
+SOURCES="src/main.c src/platform/generated/xdg-shell-protocol.c src/platform/linux_wayland.c src/platform/linux_portal.c src/platform/capture_pipewire.c src/platform/audio_pipewire.c src/platform/config_linux.c src/codec/codec_ffmpeg.c src/codec/codec_ffmpeg_decode.c src/codec/audio_opus.c src/net/network_udp.c src/ui/render_gl.c src/ui/ui_simple.c"
 
 echo "Building Harmony..."
 gcc $FLAGS $INCLUDES $SOURCES -o build/harmony $LIBS

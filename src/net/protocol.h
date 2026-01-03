@@ -14,7 +14,8 @@ typedef enum PacketType {
     PACKET_TYPE_VIDEO = 0,
     PACKET_TYPE_METADATA = 1,
     PACKET_TYPE_KEEPALIVE = 2,
-    PACKET_TYPE_PUNCH = 3       // UDP hole punch packet
+    PACKET_TYPE_PUNCH = 3,      // UDP hole punch packet
+    PACKET_TYPE_AUDIO = 4       // Opus-encoded audio
 } PacketType;
 
 typedef struct PacketHeader {
@@ -83,6 +84,10 @@ static void Protocol_SendFrame(Packetizer *pz, void *frame_data, size_t frame_si
 
 static void Protocol_SendMetadata(Packetizer *pz, StreamMetadata *meta, SendPacketCallback send_fn, void *user_data) {
     Protocol_SendData(pz, PACKET_TYPE_METADATA, meta, sizeof(StreamMetadata), send_fn, user_data);
+}
+
+static void Protocol_SendAudio(Packetizer *pz, void *audio_data, size_t audio_size, SendPacketCallback send_fn, void *user_data) {
+    Protocol_SendData(pz, PACKET_TYPE_AUDIO, audio_data, audio_size, send_fn, user_data);
 }
 
 // Send a minimal keepalive packet (header only, no payload)
