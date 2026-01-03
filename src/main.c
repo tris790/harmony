@@ -63,8 +63,6 @@ static int CalculateTargetBitrate(int width, int height, int fps) {
 }
 
 static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *meta, float current_mbps, int frames_decoded) {
-    if (meta->screen_width == 0) return;
-
     int mx = 0, my = 0;
     OS_GetMouseState(window, &mx, &my, NULL);
 
@@ -74,7 +72,7 @@ static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *
     bool hovered = (mx >= icon_x && mx <= icon_x + icon_size &&
                     my >= icon_y && my <= icon_y + icon_size);
 
-    // Draw Help Icon ('?' circle)
+    // Draw Help Icon ('?' circle) - always visible
     float icon_alpha = hovered ? 1.0f : 0.6f;
     Render_DrawRoundedRect(icon_x, icon_y, icon_size, icon_size, icon_size * 0.5f, 0.0f, 0.0f, 0.0f, icon_alpha * 0.7f);
     Render_DrawText("?", icon_x + 6, icon_y + 4, 1.2f, 1.0f, 1.0f, 1.0f, icon_alpha);
@@ -82,26 +80,28 @@ static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *
     if (hovered) {
         OS_SetCursor(window, OS_CURSOR_HAND);
 
-        char meta_text[256];
-        snprintf(meta_text, sizeof(meta_text), "HOST: %s | %s", meta->os_name, meta->de_name);
-        char meta_text2[256];
-        snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FPS: %u | FMT: %s | RX: %.1f Mbps | Frames: %d", 
-            meta->screen_width, meta->screen_height, meta->fps, meta->format_name, current_mbps, frames_decoded);
+        if (meta->screen_width > 0) {
+            char meta_text[256];
+            snprintf(meta_text, sizeof(meta_text), "HOST: %s | %s", meta->os_name, meta->de_name);
+            char meta_text2[256];
+            snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FPS: %u | FMT: %s | RX: %.1f Mbps | Frames: %d", 
+                meta->screen_width, meta->screen_height, meta->fps, meta->format_name, current_mbps, frames_decoded);
 
-        float scale = 1.5f;
-        float tw1 = Render_GetTextWidth(meta_text, scale);
-        float tw2 = Render_GetTextWidth(meta_text2, scale);
-        float max_tw = (tw1 > tw2) ? tw1 : tw2;
-        float padding = 10.0f;
-        float rect_w = max_tw + padding * 2.0f;
-        float rect_h = 70.0f;
+            float scale = 1.5f;
+            float tw1 = Render_GetTextWidth(meta_text, scale);
+            float tw2 = Render_GetTextWidth(meta_text2, scale);
+            float max_tw = (tw1 > tw2) ? tw1 : tw2;
+            float padding = 10.0f;
+            float rect_w = max_tw + padding * 2.0f;
+            float rect_h = 70.0f;
 
-        // Draw tooltip next to the icon
-        float tx = icon_x + icon_size + 5.0f;
-        float ty = icon_y;
-        Render_DrawRect(tx, ty, rect_w, rect_h, 0.0f, 0.0f, 0.0f, 0.8f);
-        Render_DrawText(meta_text, tx + padding, ty + 20, scale, 1.0f, 1.0f, 1.0f, 1.0f);
-        Render_DrawText(meta_text2, tx + padding, ty + 50, scale, 0.8f, 0.8f, 0.8f, 1.0f);
+            // Draw tooltip next to the icon
+            float tx = icon_x + icon_size + 5.0f;
+            float ty = icon_y;
+            Render_DrawRect(tx, ty, rect_w, rect_h, 0.0f, 0.0f, 0.0f, 0.8f);
+            Render_DrawText(meta_text, tx + padding, ty + 20, scale, 1.0f, 1.0f, 1.0f, 1.0f);
+            Render_DrawText(meta_text2, tx + padding, ty + 50, scale, 0.8f, 0.8f, 0.8f, 1.0f);
+        }
     } else {
         OS_SetCursor(window, OS_CURSOR_ARROW);
     }
