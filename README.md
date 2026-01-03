@@ -5,7 +5,7 @@ Harmony is a high-performance, handmade screen-sharing application for Linux (Wa
 ## Features
 
 - **Low Latency**: Custom UDP protocol with fragmentation/reassembly.
-- **UDP Punchhole**: Built-in NAT traversal using STUN/TURN.
+- **UDP Punchhole**: Built-in NAT traversal using STUN/TURN, runs on port 9999.
 - **Wayland Native**: Built from scratch for Wayland using XDG Desktop Portal for screencasting.
 - **Audio Support**: High-quality audio capture via PipeWire and encoding with Opus. Support desktop audio or specific applications.
 - **Configurable**: Persistent settings in ~/.config/harmony/config.json.
