@@ -54,6 +54,7 @@ bool Config_Load(PersistentConfig *config) {
     strcpy(config->target_ip, "127.0.0.1");
     strcpy(config->stream_password, "");
     strcpy(config->encoder_preset, "faster"); // Default to 'faster' for good quality/speed balance
+    config->fps = 60; // Default to 60 FPS
     
     const char *path = GetConfigPath();
     FILE *f = fopen(path, "r");
@@ -96,12 +97,15 @@ bool Config_Load(PersistentConfig *config) {
         } else if (strcmp(key, "encoder_preset") == 0) {
             strncpy(config->encoder_preset, value, sizeof(config->encoder_preset) - 1);
             config->encoder_preset[sizeof(config->encoder_preset) - 1] = '\0';
+        } else if (strcmp(key, "fps") == 0) {
+            config->fps = (uint32_t)atoi(value);
+            if (config->fps == 0) config->fps = 60; // Sanity check
         }
     }
     
     fclose(f);
-    printf("Config: Loaded from %s (is_host=%s, verbose=%s, target_ip=%s)\n", 
-           path, config->is_host ? "true" : "false", config->verbose ? "true" : "false", config->target_ip);
+    printf("Config: Loaded from %s (is_host=%s, verbose=%s, target_ip=%s, fps=%u)\n", 
+           path, config->is_host ? "true" : "false", config->verbose ? "true" : "false", config->target_ip, config->fps);
     return true;
 }
 
@@ -125,6 +129,7 @@ bool Config_Save(const PersistentConfig *config) {
     fprintf(f, "use_portal_audio=%s\n", config->use_portal_audio ? "true" : "false");
     fprintf(f, "# encoder_preset: ultrafast, superfast, veryfast, faster, fast, medium (slower = better quality)\n");
     fprintf(f, "encoder_preset=%s\n", config->encoder_preset);
+    fprintf(f, "fps=%u\n", config->fps);
     
     fclose(f);
     printf("Config: Saved to %s\n", path);

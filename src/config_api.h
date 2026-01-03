@@ -2,6 +2,7 @@
 #define HARMONY_CONFIG_API_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // Persistent configuration - saved between app sessions
 typedef struct PersistentConfig {
@@ -11,6 +12,7 @@ typedef struct PersistentConfig {
     char stream_password[64];
     bool use_portal_audio;
     char encoder_preset[32]; // x264 preset: ultrafast, superfast, veryfast, faster, fast, medium
+    uint32_t fps;
 } PersistentConfig;
 
 // Load config from OS-specific location. Returns false if file doesn't exist.

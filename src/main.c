@@ -110,7 +110,7 @@ static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *
     }
 }
 
-int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id, const char *encoder_preset, const char *password) {
+int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id, const char *encoder_preset, const char *password, const PersistentConfig *config) {
     (void)verbose;
     printf("Starting HOST Mode...\n");
     
@@ -148,8 +148,9 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     }
 
     // Use dynamic bitrate calculation
-    int initial_bitrate = CalculateTargetBitrate(1280, 720, 30);
-    VideoFormat vfmt = { .width = 1280, .height = 720, .fps = 30, .bitrate = initial_bitrate };
+    int target_fps = (config && config->fps > 0) ? config->fps : 60;
+    int initial_bitrate = CalculateTargetBitrate(1280, 720, target_fps);
+    VideoFormat vfmt = { .width = 1280, .height = 720, .fps = target_fps, .bitrate = initial_bitrate };
     strncpy(vfmt.preset, encoder_preset, sizeof(vfmt.preset) - 1);
     vfmt.preset[sizeof(vfmt.preset) - 1] = '\0';
     EncoderContext *encoder = Codec_InitEncoder(arena, vfmt);
@@ -230,11 +231,11 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
         OS_GetWindowSize(window, &w, &h);
         Render_SetScreenSize(w, h);
         
-        // Update elapsed time for animations (~30fps assumed)
-        elapsed_time += 1.0f / 30.0f;
+        // Update elapsed time for animations
+        elapsed_time += 1.0f / (float)vfmt.fps;
         
         // Send punch to viewer to open our firewall for their punch (same socket)
-        time_since_host_punch += 1.0f / 30.0f;
+        time_since_host_punch += 1.0f / (float)vfmt.fps;
         if (time_since_host_punch >= HOST_PUNCH_INTERVAL) {
             Protocol_SendPunch(&packetizer, Net_SendPacketCallback, &net_cb);
             time_since_host_punch = 0.0f;
@@ -301,7 +302,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
         }
         
         // Send Metadata periodically (every ~1 sec)
-        if (frame_count % 30 == 0) {
+        if (frame_count % vfmt.fps == 0) {
              Protocol_SendMetadata(&packetizer, &metadata, Net_SendPacketCallback, &net_cb);
         }
 
@@ -394,15 +395,11 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                     }
                     
                     // 2. Send via WebSocket (New)
-                    WS_Broadcast(ws, PACKET_TYPE_VIDEO, current_frame_id, pkt.data, pkt.size);
-                    
-                    frames_encoded++;
-                    time_since_last_send = 0.0f; // Reset keepalive timer
                 }
             }
         } else {
             // No frame captured - track time for keepalive
-            time_since_last_send += 1.0f / 30.0f;
+            time_since_last_send += 1.0f / (float)vfmt.fps;
             
             // Send keepalive if we've been idle for too long
             if (has_started_capturing && time_since_last_send > KEEPALIVE_INTERVAL) {
@@ -503,7 +500,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         }
         
         // Send punch packet periodically (UDP hole punching)
-        time_since_last_punch += 1.0f / 30.0f;
+        time_since_last_punch += 1.0f / 60.0f; // Assumed 60fps loop for UI
         if (time_since_last_punch >= PUNCH_INTERVAL) {
             Protocol_SendPunch(&punch_packetizer, Net_SendPacketCallback, &punch_cb);
             time_since_last_punch = 0.0f;
@@ -644,7 +641,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         }
         
         // Update bandwidth measurement
-        bandwidth_window_time += 1.0f / 30.0f;
+        bandwidth_window_time += 1.0f / 60.0f; // Assumed 60fps loop for UI
         if (bandwidth_window_time >= BANDWIDTH_WINDOW) {
             current_mbps = (bytes_received_window * 8.0f) / (bandwidth_window_time * 1000000.0f);
             bytes_received_window = 0;
@@ -655,7 +652,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         if (received_any_packet) {
             time_since_last_frame = 0.0f;
         } else {
-            time_since_last_frame += 1.0f / 30.0f; // Approximate frame time
+            time_since_last_frame += 1.0f / 60.0f; // Approximate frame time (UI loop)
         }
         
         // Reset to waiting state if stream timed out
@@ -707,6 +704,7 @@ typedef struct AppConfig {
     bool verbose;
     char target_ip[64];
     char stream_password[64];
+    uint32_t fps;
     uint32_t selected_audio_node_id; 
     bool start_app;
 } AppConfig;
@@ -733,6 +731,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
     strcpy(config->stream_password, saved_config->stream_password);
     config->is_host = saved_config->is_host;
     config->verbose = saved_config->verbose;
+    config->fps = saved_config->fps;
     config->selected_audio_node_id = 0; // Default System
     config->start_app = false;
     
@@ -851,12 +850,18 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         UI_CenterNext(input_w);
         UI_TextInput("ip_input", config->target_ip, 64, 0, cy + 50, input_w, 50, UI_INPUT_NUMERIC);
         
-        // Password Config
-        UI_CenterNext(0);
-        UI_Label("Stream Password:", 0, cy + 105, 1.8f);
-        
-        UI_CenterNext(input_w);
-        UI_TextInput("pass_input", config->stream_password, 64, 0, cy + 130, input_w, 40, UI_INPUT_PASSWORD);
+        // Password and FPS row
+        int row_y = cy + 110;
+        UI_Label("Password:", cx - 210, row_y, 2.0f);
+        UI_TextInput("pass_input", config->stream_password, 64, cx - 180, row_y + 30, 160, 40, UI_INPUT_PASSWORD);
+
+        UI_Label("FPS:", cx + 20, row_y, 2.0f);
+        static char fps_buf[16];
+        static bool fps_init = false;
+        if (!fps_init) { snprintf(fps_buf, sizeof(fps_buf), "%u", config->fps); fps_init = true; }
+        UI_TextInput("fps_input", fps_buf, 16, cx + 70, row_y + 30, 80, 40, UI_INPUT_NUMERIC);
+        config->fps = (uint32_t)atoi(fps_buf);
+        if (config->fps == 0) config->fps = 60; // Sanity
         
         // Audio Source List
         if (config->is_host) {
@@ -944,11 +949,12 @@ int main(int argc, char **argv) {
             // saved_config.use_portal_audio = config.use_portal_audio; // Removed for now
             strcpy(saved_config.target_ip, config.target_ip);
             strcpy(saved_config.stream_password, config.stream_password);
+            saved_config.fps = config.fps;
             Config_Save(&saved_config);
             
             int result;
             if (config.is_host) {
-                result = RunHost(&main_arena, window, config.target_ip, config.verbose, config.selected_audio_node_id, saved_config.encoder_preset, config.stream_password);
+                result = RunHost(&main_arena, window, config.target_ip, config.verbose, config.selected_audio_node_id, saved_config.encoder_preset, config.stream_password, &saved_config);
             } else {
                 result = RunViewer(&main_arena, window, config.target_ip, config.verbose, config.stream_password);
             }
