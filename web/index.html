@@ -307,12 +307,12 @@
         // JMuxer instance
         let jmuxer = new JMuxer({
             node: 'player',
-            mode: 'video',
+            mode: 'both',
             flushingTime: 0,
             maxDelay: 100,
             clearBuffer: true,
             fps: 60,
-            debug: false
+            debug: true
         });
 
         async function deriveKey(password) {
@@ -418,7 +418,7 @@
                             jmuxer.feed({ video: decryptedData });
                         } else if (packetType === 4) {
                             audioPackets++;
-                            // Audio disabled in jmuxer for now to debug video
+                            jmuxer.feed({ audio: decryptedData });
                         }
 
                         if (videoPackets > 0 && videoPackets % 60 === 0) {
@@ -468,6 +468,12 @@
         video.addEventListener('click', () => {
             video.muted = false;
             video.play().catch(console.error);
+            // Resume jmuxer audio context if it exists and is suspended
+            if (jmuxer && jmuxer.audioCtx && jmuxer.audioCtx.state === 'suspended') {
+                jmuxer.audioCtx.resume().then(() => {
+                    console.log('AudioContext resumed.');
+                });
+            }
         });
     </script>
 </body>
