@@ -14,7 +14,7 @@ FLAGS="-g -O0 -Wall -Wextra -Wno-unused-function"
 
 # Libraries
 # FFmpeg, Wayland, PipeWire, DBus, Opus
-LIBS="-lavcodec -lavformat -lavutil -lswscale -lwayland-client -lwayland-cursor -lwayland-egl -lEGL -lGL -lxkbcommon -lm -lopus $(pkg-config --libs libpipewire-0.3 dbus-1)"
+LIBS="-lavcodec -lavformat -lavutil -lswscale -lwayland-client -lwayland-cursor -lwayland-egl -lEGL -lGL -lxkbcommon -lm -lopus -lpthread $(pkg-config --libs libpipewire-0.3 dbus-1)"
 
 # Includes
 INCLUDES="-Isrc $(pkg-config --cflags libpipewire-0.3 dbus-1 opus)"

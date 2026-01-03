@@ -5,6 +5,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/pod/builder.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include "../audio_api.h"
@@ -402,7 +403,7 @@ void Audio_CloseCapture(AudioCaptureContext *ctx) {
 
 // --- Audio Playback Context ---
 struct AudioPlaybackContext {
-    struct pw_main_loop *loop;
+    struct pw_thread_loop *thread_loop; // Dedicated audio thread
     struct pw_context *context;
     struct pw_core *core;
     struct pw_stream *stream;
@@ -410,15 +411,22 @@ struct AudioPlaybackContext {
     
     MemoryArena *arena;
     
+    // Thread safety
+    pthread_mutex_t mutex;
+    
     // Ring buffer for playback
     int16_t *buffer;
     int buffer_size;
     int write_pos;
     int read_pos;
     int available;
+    
+    // Jitter Buffer State
+    bool buffering;
+    int target_latency; // Samples to buffer before starting
 };
 
-// Playback stream callback
+// Playback stream callback (Runs on dedicated thread)
 static void playback_on_process(void *data) {
     AudioPlaybackContext *ctx = (AudioPlaybackContext *)data;
     struct pw_buffer *b;
@@ -436,18 +444,39 @@ static void playback_on_process(void *data) {
     
     int16_t *dst = (int16_t *)buf->datas[0].data;
     int max_samples = buf->datas[0].maxsize / sizeof(int16_t);
-    int n_samples = 0;
+    int n_written = 0;
     
-    // Copy from ring buffer
-    while (n_samples < max_samples && ctx->available > 0) {
-        dst[n_samples++] = ctx->buffer[ctx->read_pos];
-        ctx->read_pos = (ctx->read_pos + 1) % ctx->buffer_size;
-        ctx->available--;
+    pthread_mutex_lock(&ctx->mutex);
+    
+    // Jitter Buffer Logic
+    // If we are in buffering state, we output silence until we have enough data
+    if (ctx->buffering) {
+        if (ctx->available >= ctx->target_latency) {
+            ctx->buffering = false;
+        //    printf("Audio: Buffering complete. Starting playback (Available: %d)\n", ctx->available);
+        }
+    } else {
+        // If we run dry, go back to buffering state
+        if (ctx->available == 0) {
+            ctx->buffering = true;
+        //    printf("Audio: Underrun! Re-buffering...\n");
+        }
+    }
+
+    if (!ctx->buffering) {
+        // Copy from ring buffer
+        while (n_written < max_samples && ctx->available > 0) {
+            dst[n_written++] = ctx->buffer[ctx->read_pos];
+            ctx->read_pos = (ctx->read_pos + 1) % ctx->buffer_size;
+            ctx->available--;
+        }
     }
     
+    pthread_mutex_unlock(&ctx->mutex);
+    
     // Fill remainder with silence
-    while (n_samples < max_samples) {
-        dst[n_samples++] = 0;
+    while (n_written < max_samples) {
+        dst[n_written++] = 0;
     }
     
     buf->datas[0].chunk->offset = 0;
@@ -466,28 +495,40 @@ AudioPlaybackContext* Audio_InitPlayback(MemoryArena *arena) {
     AudioPlaybackContext *ctx = PushStructZero(arena, AudioPlaybackContext);
     ctx->arena = arena;
     
+    pthread_mutex_init(&ctx->mutex, NULL);
+    
     // Ring buffer: 1 second of audio
     ctx->buffer_size = AUDIO_SAMPLE_RATE * AUDIO_CHANNELS;
     ctx->buffer = ArenaPush(arena, ctx->buffer_size * sizeof(int16_t));
     
+    // Jitter Buffer Settings
+    // 100ms buffering @ 48kHz = 4800 samples per channel * 2 channels = 9600 samples
+    ctx->target_latency = (AUDIO_SAMPLE_RATE / 10) * AUDIO_CHANNELS; 
+    ctx->buffering = true;
+    
     pw_init(NULL, NULL);
     
-    ctx->loop = pw_main_loop_new(NULL);
-    ctx->context = pw_context_new(pw_main_loop_get_loop(ctx->loop), NULL, 0);
+    // Use Thread Loop instead of Main Loop for playback
+    // This decouples audio from the main application frame rate/vsync
+    ctx->thread_loop = pw_thread_loop_new("Audio Playback", NULL);
+    ctx->context = pw_context_new(pw_thread_loop_get_loop(ctx->thread_loop), NULL, 0);
     ctx->core = pw_context_connect(ctx->context, NULL, 0);
     
     if (!ctx->core) {
         fprintf(stderr, "Audio: Failed to connect to PipeWire for playback\n");
+        // Cleanup?
         return NULL;
     }
     
     ctx->stream = pw_stream_new_simple(
-        pw_main_loop_get_loop(ctx->loop),
+        pw_thread_loop_get_loop(ctx->thread_loop),
         "harmony-audio-playback",
         pw_properties_new(
             PW_KEY_MEDIA_TYPE, "Audio",
             PW_KEY_MEDIA_CATEGORY, "Playback",
             PW_KEY_MEDIA_ROLE, "Music",
+            // Low latency properties
+            PW_KEY_NODE_LATENCY, "480/48000", // 10ms
             NULL
         ),
         &playback_stream_events,
@@ -510,7 +551,7 @@ AudioPlaybackContext* Audio_InitPlayback(MemoryArena *arena) {
         ctx->stream,
         PW_DIRECTION_OUTPUT,
         PW_ID_ANY,
-        PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+        PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS,
         params, 1
     );
     
@@ -519,14 +560,17 @@ AudioPlaybackContext* Audio_InitPlayback(MemoryArena *arena) {
         return NULL;
     }
     
-    printf("Audio: Playback initialized (48kHz stereo S16LE)\n");
+    // Start the thread loop
+    pw_thread_loop_start(ctx->thread_loop);
+    
+    printf("Audio: Playback initialized (Threaded + JitterBuffer 100ms)\n");
     return ctx;
 }
 
 void Audio_PollPlayback(AudioPlaybackContext *ctx) {
-    if (ctx && ctx->loop) {
-        pw_loop_iterate(pw_main_loop_get_loop(ctx->loop), 0);
-    }
+    // No-op for threaded implementation
+    // The thread loop handles processing internally
+    (void)ctx;
 }
 
 void Audio_WritePlayback(AudioPlaybackContext *ctx, AudioFrame *frame) {
@@ -534,19 +578,28 @@ void Audio_WritePlayback(AudioPlaybackContext *ctx, AudioFrame *frame) {
     
     int n_samples = frame->sample_count * frame->channels;
     
+    pthread_mutex_lock(&ctx->mutex);
+    
     // Copy to ring buffer
     for (int i = 0; i < n_samples && ctx->available < ctx->buffer_size; i++) {
         ctx->buffer[ctx->write_pos] = frame->samples[i];
         ctx->write_pos = (ctx->write_pos + 1) % ctx->buffer_size;
         ctx->available++;
     }
+    
+    pthread_mutex_unlock(&ctx->mutex);
 }
 
 void Audio_ClosePlayback(AudioPlaybackContext *ctx) {
     if (ctx) {
+        if (ctx->thread_loop) pw_thread_loop_stop(ctx->thread_loop);
+        
         if (ctx->stream) pw_stream_destroy(ctx->stream);
         if (ctx->core) pw_core_disconnect(ctx->core);
         if (ctx->context) pw_context_destroy(ctx->context);
-        if (ctx->loop) pw_main_loop_destroy(ctx->loop);
+        
+        if (ctx->thread_loop) pw_thread_loop_destroy(ctx->thread_loop);
+        
+        pthread_mutex_destroy(&ctx->mutex);
     }
 }
