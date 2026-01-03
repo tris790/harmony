@@ -230,8 +230,12 @@ void UI_EndFrame() {
 }
 
 bool UI_Button(const char *text, int x, int y, int w, int h) {
+    float tw = Render_GetTextWidth(text, 2.0f);
+    int min_w = (int)tw + 40; // Padding
+    if (w < min_w) w = min_w;
+
     if (ui.next_centered) {
-        x = (ui.window_width - ui.next_centered_w) / 2;
+        x = (ui.window_width - w) / 2;
         ui.next_centered = false;
     }
 
@@ -251,9 +255,7 @@ bool UI_Button(const char *text, int x, int y, int w, int h) {
     
     Render_DrawRoundedRect(x, y, w, h, 12.0f, r, g, b, 1.0f);
     
-    int char_w = 16; 
     int char_h = 16;
-    float tw = Render_GetTextWidth(text, 2.0f);
     int text_x = x + (w - (int)tw) / 2;
     int text_y = y + (h - char_h) / 2;
     

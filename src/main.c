@@ -63,6 +63,7 @@ static int CalculateTargetBitrate(int width, int height, int fps) {
 }
 
 int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id) {
+    (void)verbose;
     printf("Starting HOST Mode...\n");
     
     MemoryArena packet_arena;
@@ -117,7 +118,6 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     
     // Viewer address tracking - will be updated when we receive punch packets
     char viewer_ip[16] = {0};
-    int viewer_port = 9999;  // Viewer listens on 9999
     bool has_viewer = false;
     
     // Send to target_ip:9999 (updated when we receive punch from viewer)
@@ -319,6 +319,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
 
 // --- VIEWER MODE ---
 int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bool verbose) {
+    (void)verbose;
     printf("Starting VIEWER Mode...\n");
     printf("Viewer: Will send punch packets to host at %s:9999\n", host_ip);
     
@@ -470,7 +471,9 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                     EncodedPacket pkt = { .data = frame_data, .size = frame_size };
                     Codec_DecodePacket(decoder, &pkt, &decoded_frame);
 
-                    received_frame_this_tick = true;
+                    if (decoded_frame.width > 0) {
+                         received_frame_this_tick = true;
+                    }
                     received_any_packet = true;
                 }
             }
@@ -521,8 +524,8 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                 char meta_text[256];
                 snprintf(meta_text, sizeof(meta_text), "HOST: %s | %s", stream_meta.os_name, stream_meta.de_name);
                 char meta_text2[256];
-                snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FMT: %s | RX: %.1f Mbps", 
-                    stream_meta.screen_width, stream_meta.screen_height, stream_meta.format_name, current_mbps);
+                snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FMT: %s | RX: %.1f Mbps | Frames: %d", 
+                    stream_meta.screen_width, stream_meta.screen_height, stream_meta.format_name, current_mbps, frames_decoded);
 
                 Render_DrawRect(10, 10, 600, 80, 0.0f, 0.0f, 0.0f, 0.7f); // Transparent black box
                 Render_DrawText(meta_text, 20, 30, 1.5f, 1.0f, 1.0f, 1.0f, 1.0f);
@@ -558,6 +561,20 @@ typedef struct AppConfig {
     bool start_app;
 } AppConfig;
 
+static void GetPublicIP(char *buffer, int size) {
+    FILE *fp = popen("curl -s https://api.ipify.org", "r");
+    if (fp) {
+        if (fgets(buffer, size, fp) != NULL) {
+            // Strip newline if present
+            size_t len = strlen(buffer);
+            if (len > 0 && buffer[len-1] == '\n') {
+                buffer[len-1] = '\0';
+            }
+        }
+        pclose(fp);
+    }
+}
+
 void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const PersistentConfig *saved_config) {
     UI_Init(arena); // Init UI Shader
     
@@ -579,7 +596,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
     full_list.nodes = ArenaPush(&temp_arena, (node_list.count + 1) * sizeof(AudioNodeInfo));
     full_list.count = node_list.count + 1;
     full_list.nodes[0].id = 0;
-    strcpy(full_list.nodes[0].name, "[Default] System Audio");
+    strcpy(full_list.nodes[0].name, "[All] System Audio");
     for(int i=0; i<node_list.count; i++) {
         full_list.nodes[i+1] = node_list.nodes[i];
     }
@@ -631,12 +648,42 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
             config->is_host = false;
         }
         
-        // Selection Indicator
         if (config->is_host) {
              Render_DrawRect(cx - 210, cy - 65, 200, 4, 0.71f, 0.75f, 1.0f, 1.0f); // Underline Host
         } else {
              Render_DrawRect(cx + 10, cy - 65, 200, 4, 0.71f, 0.75f, 1.0f, 1.0f); // Underline Viewer
         }
+        
+        // --- Public IP Section (Shared) ---
+        static char public_ip[64] = "";
+        static bool ip_fetched = false;
+        static bool ip_copied = false;
+        
+        int ip_y = cy - 40;
+        if (!ip_fetched) {
+            UI_CenterNext(0); // Auto width will be handled by UI_Button
+            if (UI_Button("Show Public IP", 0, ip_y, 160, 30)) {
+                GetPublicIP(public_ip, sizeof(public_ip));
+                if (strlen(public_ip) > 0) {
+                    ip_fetched = true;
+                    ip_copied = false;
+                }
+            }
+        } else {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "Public IP: %s", public_ip);
+            float tw = Render_GetTextWidth(buf, 1.8f);
+            int label_x = cx - (int)tw / 2;
+            Render_DrawText(buf, label_x, ip_y + 5, 1.8f, 0.9f, 0.9f, 0.95f, 1.0f);
+            
+            // Copy Button next to it
+            if (UI_Button(ip_copied ? "Copied!" : "Copy", cx + (int)tw/2 + 10, ip_y, 80, 30)) {
+                OS_SetClipboardText(public_ip);
+                ip_copied = true;
+            }
+        }
+
+        // Host Mode Specifics
         
         // IP Config
         UI_CenterNext(0);
@@ -666,7 +713,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
                 full_list.nodes = ArenaPush(&temp_arena, (node_list.count + 1) * sizeof(AudioNodeInfo));
                 full_list.count = node_list.count + 1;
                 full_list.nodes[0].id = 0;
-                strcpy(full_list.nodes[0].name, "[Default] System Audio");
+                strcpy(full_list.nodes[0].name, "[All] System Audio");
                 for(int i=0; i<node_list.count; i++) {
                     full_list.nodes[i+1] = node_list.nodes[i];
                 }

@@ -51,6 +51,7 @@ void OS_SetCursor(WindowContext *window, OS_CursorType cursor);
 
 // Clipboard & Shortcuts
 const char *OS_GetClipboardText(MemoryArena *arena);
+void OS_SetClipboardText(const char *text);
 bool OS_IsPastePressed(void);
 bool OS_IsCtrlDown(void);
 

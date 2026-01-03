@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include "generated/xdg-shell-client-protocol.h"
@@ -51,6 +52,11 @@ static struct wl_data_offer *g_active_offer = NULL;
 static bool g_ctrl_down = false;
 static bool g_paste_requested = false;
 
+// --- Clipboard Copy State ---
+static struct wl_data_source *g_data_source = NULL;
+static char *g_clipboard_content = NULL; // Simple malloc/free for now or arena if we had persistent one
+
+
 static int32_t g_repeat_rate = 0;
 static int32_t g_repeat_delay = 0;
 static uint32_t g_repeat_key = 0;
@@ -60,7 +66,40 @@ static double g_next_repeat_time = 0;
 static void data_offer_offer(void *data, struct wl_data_offer *wl_data_offer, const char *mime_type) {
     // We only care about text
 }
+
 static const struct wl_data_offer_listener data_offer_listener = { .offer = data_offer_offer };
+
+// --- Data Source (Copy) ---
+static void data_source_target(void *data, struct wl_data_source *wl_data_source, const char *mime_type) {
+}
+
+static void data_source_send(void *data, struct wl_data_source *wl_data_source, const char *mime_type, int32_t fd) {
+    if (g_clipboard_content && (strcmp(mime_type, "text/plain") == 0 || strcmp(mime_type, "text/plain;charset=utf-8") == 0)) {
+        write(fd, g_clipboard_content, strlen(g_clipboard_content));
+    }
+    close(fd);
+}
+
+static void data_source_cancelled(void *data, struct wl_data_source *wl_data_source) {
+    if (g_data_source == wl_data_source) {
+        wl_data_source_destroy(g_data_source);
+        g_data_source = NULL;
+        if (g_clipboard_content) {
+             free(g_clipboard_content);
+             g_clipboard_content = NULL;
+        }
+    }
+}
+
+static const struct wl_data_source_listener data_source_listener = {
+    .target = data_source_target,
+    .send = data_source_send,
+    .cancelled = data_source_cancelled,
+    .dnd_drop_performed = NULL, // Since v3
+    .dnd_finished = NULL,       // Since v3
+    .action = NULL,             // Since v3
+};
+
 
 static void data_device_data_offer(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *offer) {
     wl_data_offer_add_listener(offer, &data_offer_listener, NULL);
@@ -559,6 +598,27 @@ const char* OS_GetClipboardText(MemoryArena *arena) {
 
     return "";
 }
+
+void OS_SetClipboardText(const char *text) {
+    if (!data_device_manager || !seat) return;
+
+    if (g_clipboard_content) {
+        free(g_clipboard_content);
+        g_clipboard_content = NULL;
+    }
+
+    if (text) {
+        g_clipboard_content = strdup(text);
+        
+        g_data_source = wl_data_device_manager_create_data_source(data_device_manager);
+        wl_data_source_add_listener(g_data_source, &data_source_listener, NULL);
+        wl_data_source_offer(g_data_source, "text/plain");
+        wl_data_source_offer(g_data_source, "text/plain;charset=utf-8");
+        
+        wl_data_device_set_selection(data_device, g_data_source, g_last_pointer_serial);
+    }
+}
+
 
 bool OS_IsPastePressed(void) {
     bool p = g_paste_requested;
