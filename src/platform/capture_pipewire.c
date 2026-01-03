@@ -72,8 +72,9 @@ static void on_process(void *data) {
     if (buf->datas[0].data == NULL) return; // No data
 
     // Use current dimensions from param_changed
-    int width = ctx->current_width;
-    int height = ctx->current_height;
+    // Force even dimensions for x264/YUV420p
+    int width = ctx->current_width & ~1;
+    int height = ctx->current_height & ~1;
     
     if (width == 0 || height == 0) {
         // Fallback or wait for param_changed
