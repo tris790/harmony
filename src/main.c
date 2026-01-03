@@ -62,6 +62,51 @@ static int CalculateTargetBitrate(int width, int height, int fps) {
     return (int)(width * height * fps * 0.08f);
 }
 
+static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *meta, float current_mbps, int frames_decoded) {
+    if (meta->screen_width == 0) return;
+
+    int mx = 0, my = 0;
+    OS_GetMouseState(window, &mx, &my, NULL);
+
+    float icon_x = 10.0f;
+    float icon_y = 10.0f;
+    float icon_size = 24.0f;
+    bool hovered = (mx >= icon_x && mx <= icon_x + icon_size &&
+                    my >= icon_y && my <= icon_y + icon_size);
+
+    // Draw Help Icon ('?' circle)
+    float icon_alpha = hovered ? 1.0f : 0.6f;
+    Render_DrawRoundedRect(icon_x, icon_y, icon_size, icon_size, icon_size * 0.5f, 0.0f, 0.0f, 0.0f, icon_alpha * 0.7f);
+    Render_DrawText("?", icon_x + 6, icon_y + 4, 1.2f, 1.0f, 1.0f, 1.0f, icon_alpha);
+
+    if (hovered) {
+        OS_SetCursor(window, OS_CURSOR_HAND);
+
+        char meta_text[256];
+        snprintf(meta_text, sizeof(meta_text), "HOST: %s | %s", meta->os_name, meta->de_name);
+        char meta_text2[256];
+        snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FMT: %s | RX: %.1f Mbps | Frames: %d", 
+            meta->screen_width, meta->screen_height, meta->format_name, current_mbps, frames_decoded);
+
+        float scale = 1.5f;
+        float tw1 = Render_GetTextWidth(meta_text, scale);
+        float tw2 = Render_GetTextWidth(meta_text2, scale);
+        float max_tw = (tw1 > tw2) ? tw1 : tw2;
+        float padding = 10.0f;
+        float rect_w = max_tw + padding * 2.0f;
+        float rect_h = 70.0f;
+
+        // Draw tooltip next to the icon
+        float tx = icon_x + icon_size + 5.0f;
+        float ty = icon_y;
+        Render_DrawRect(tx, ty, rect_w, rect_h, 0.0f, 0.0f, 0.0f, 0.8f);
+        Render_DrawText(meta_text, tx + padding, ty + 20, scale, 1.0f, 1.0f, 1.0f, 1.0f);
+        Render_DrawText(meta_text2, tx + padding, ty + 50, scale, 0.8f, 0.8f, 0.8f, 1.0f);
+    } else {
+        OS_SetCursor(window, OS_CURSOR_ARROW);
+    }
+}
+
 int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id) {
     (void)verbose;
     printf("Starting HOST Mode...\n");
@@ -515,26 +560,8 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         if (decoded_frame.width > 0 && decoded_frame.height > 0) {
             Render_DrawFrame(&decoded_frame, win_w, win_h);
 
-            // Draw Metadata Overlay
-            if (stream_meta.screen_width > 0) {
-                char meta_text[256];
-                snprintf(meta_text, sizeof(meta_text), "HOST: %s | %s", stream_meta.os_name, stream_meta.de_name);
-                char meta_text2[256];
-                snprintf(meta_text2, sizeof(meta_text2), "RES: %dx%d | FMT: %s | RX: %.1f Mbps | Frames: %d", 
-                    stream_meta.screen_width, stream_meta.screen_height, stream_meta.format_name, current_mbps, frames_decoded);
-
-                float scale = 1.5f;
-                float tw1 = Render_GetTextWidth(meta_text, scale);
-                float tw2 = Render_GetTextWidth(meta_text2, scale);
-                float max_tw = (tw1 > tw2) ? tw1 : tw2;
-                float padding = 10.0f;
-                float rect_w = max_tw + padding * 2.0f;
-                float rect_h = 70.0f;
-
-                Render_DrawRect(10, 10, rect_w, rect_h, 0.0f, 0.0f, 0.0f, 0.7f); // Transparent black box
-                Render_DrawText(meta_text, 10 + padding, 30, scale, 1.0f, 1.0f, 1.0f, 1.0f);
-                Render_DrawText(meta_text2, 10 + padding, 60, scale, 0.8f, 0.8f, 0.8f, 1.0f);
-            }
+            // Metadata Tooltip
+            UI_DrawMetadataTooltip(window, &stream_meta, current_mbps, frames_decoded);
         } else {
              Render_Clear(0.1f, 0.1f, 0.1f, 1.0f);
              const char *wait_msg = "Waiting for stream...";
