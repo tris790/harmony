@@ -491,18 +491,19 @@ static void UI_DrawMetadataTooltip(WindowContext *window,
       float tw1 = Render_GetTextWidth(meta_text, scale);
       float tw2 = Render_GetTextWidth(meta_text2, scale);
       float max_tw = (tw1 > tw2) ? tw1 : tw2;
-      float padding = 15.0f;
-      float rect_w = max_tw + padding * 2.0f;
-      float rect_h = 95.0f;
+      float padding_h = 15.0f;
+      float rect_w = max_tw + padding_h * 2.0f;
+      float rect_h = 75.0f;
 
       // Draw tooltip next to the icon
       float tx = icon_x + icon_size + 5.0f;
       float ty = icon_y;
       Render_DrawRect(tx, ty, rect_w, rect_h, 0.0f, 0.0f, 0.0f, 0.8f);
-      Render_DrawText(meta_text, tx + padding, ty + 35, scale, 1.0f, 1.0f, 1.0f,
-                      1.0f);
-      Render_DrawText(meta_text2, tx + padding, ty + 70, scale, 0.8f, 0.8f,
-                      0.8f, 1.0f);
+
+      float x1 = tx + (rect_w - tw1) / 2.0f;
+      float x2 = tx + (rect_w - tw2) / 2.0f;
+      Render_DrawText(meta_text, x1, ty + 15, scale, 1.0f, 1.0f, 1.0f, 1.0f);
+      Render_DrawText(meta_text2, x2, ty + 45, scale, 0.8f, 0.8f, 0.8f, 1.0f);
     }
   } else {
     OS_SetCursor(window, OS_CURSOR_ARROW);
