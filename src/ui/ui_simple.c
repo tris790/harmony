@@ -34,6 +34,15 @@ typedef struct UIContext {
     bool overlay_consumed_click; 
     
     OS_CursorType next_cursor;
+    bool paste_requested;
+    bool ctrl_held;
+
+    // Advanced Input State
+    int cursor_pos;
+    char undo_buffer[256];
+    char redo_buffer[256];
+    bool has_undo;
+    const char *last_active_id;
 } UIContext;
 
 static UIContext ui;
@@ -77,7 +86,7 @@ void UI_Init(MemoryArena *arena) {
     (void)arena;
 }
 
-void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y, bool mouse_down, int mouse_scroll, char input_char) {
+void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y, bool mouse_down, int mouse_scroll, char input_char, bool paste_requested, bool ctrl_held) {
     ui.window_width = window_width;
     ui.window_height = window_height;
     Render_SetScreenSize(window_width, window_height);
@@ -87,6 +96,8 @@ void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y
     ui.mouse_down = mouse_down;
     ui.mouse_scroll = mouse_scroll;
     ui.last_char = input_char;
+    ui.paste_requested = paste_requested;
+    ui.ctrl_held = ctrl_held;
     
     ui.next_centered = false;
     ui.next_cursor = OS_CURSOR_ARROW;
@@ -287,29 +298,162 @@ bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, i
     }
 
     bool changed = false;
-    if (is_active && ui.last_char) {
+    if (is_active) {
         int len = strlen(buffer);
-        if (ui.last_char == '\b') {
-            if (len > 0) {
-                buffer[len - 1] = 0;
-                changed = true;
+        if (id != ui.last_active_id) {
+            ui.last_active_id = id;
+            ui.cursor_pos = len;
+            ui.has_undo = false;
+            ui.undo_buffer[0] = 0;
+            ui.redo_buffer[0] = 0;
+        }
+
+        if (ui.cursor_pos < 0) ui.cursor_pos = 0;
+        if (ui.cursor_pos > len) ui.cursor_pos = len;
+
+        if (ui.last_char) {
+            bool typing = (ui.last_char >= 32 && ui.last_char <= 126);
+            bool backspacing = (ui.last_char == '\b' || ui.last_char == '\x7f' || ui.last_char == '\x11' || ui.last_char == '\x12' || ui.last_char == '\x13' || ui.last_char == '\x14');
+            bool editing = (ui.last_char == '\x1a' || ui.last_char == '\x19');
+
+            if (typing || backspacing) {
+                if (!editing) {
+                    if (!ui.has_undo) {
+                        strncpy(ui.undo_buffer, buffer, sizeof(ui.undo_buffer)-1);
+                        ui.has_undo = true;
+                    }
+                    if (ui.last_char == ' ' || ui.last_char == '.') {
+                        ui.has_undo = false; // Commit current session
+                    }
+                    ui.redo_buffer[0] = 0;
+                }
             }
-        } else if (len < buffer_size - 1) {
-             if (ui.last_char >= 32 && ui.last_char <= 126) {
-                buffer[len] = ui.last_char;
-                buffer[len + 1] = 0;
+
+            if (ui.last_char == '\x11') { // Left
+                if (ui.cursor_pos > 0) ui.cursor_pos--;
+            } else if (ui.last_char == '\x12') { // Right
+                if (ui.cursor_pos < len) ui.cursor_pos++;
+            } else if (ui.last_char == '\x13') { // Home
+                ui.cursor_pos = 0;
+            } else if (ui.last_char == '\x14') { // End
+                ui.cursor_pos = len;
+            } else if (ui.last_char == '\x1a') { // Undo
+                if (ui.has_undo || (ui.undo_buffer[0] != 0)) {
+                    char tmp[256];
+                    strncpy(tmp, buffer, 255);
+                    tmp[255] = 0;
+                    strncpy(buffer, ui.undo_buffer, buffer_size - 1);
+                    buffer[buffer_size - 1] = 0;
+                    strncpy(ui.redo_buffer, tmp, 255);
+                    ui.redo_buffer[255] = 0;
+                    ui.cursor_pos = strlen(buffer);
+                    ui.has_undo = false;
+                    changed = true;
+                }
+            } else if (ui.last_char == '\x19') { // Redo
+                if (ui.redo_buffer[0] != 0) {
+                    char tmp[256];
+                    strncpy(tmp, buffer, 255);
+                    tmp[255] = 0;
+                    strncpy(buffer, ui.redo_buffer, buffer_size - 1);
+                    buffer[buffer_size - 1] = 0;
+                    strncpy(ui.undo_buffer, tmp, 255);
+                    ui.undo_buffer[255] = 0;
+                    ui.cursor_pos = strlen(buffer);
+                    changed = true;
+                }
+            } else if (ui.last_char == '\b' || ui.last_char == '\x7f') {
+                if (ui.last_char == '\b') {
+                    if (ui.cursor_pos > 0) {
+                        if (ui.ctrl_held) {
+                            int start = ui.cursor_pos;
+                            while (start > 0 && (buffer[start-1] == '.' || buffer[start-1] == ' ')) start--;
+                            while (start > 0 && (buffer[start-1] != '.' && buffer[start-1] != ' ')) start--;
+                            memmove(buffer + start, buffer + ui.cursor_pos, len - ui.cursor_pos + 1);
+                            ui.cursor_pos = start;
+                        } else {
+                            memmove(buffer + ui.cursor_pos - 1, buffer + ui.cursor_pos, len - ui.cursor_pos + 1);
+                            ui.cursor_pos--;
+                        }
+                        changed = true;
+                    }
+                } else { // Delete
+                    if (ui.cursor_pos < len) {
+                        if (ui.ctrl_held) {
+                            int end = ui.cursor_pos;
+                            while (end < len && (buffer[end] == '.' || buffer[end] == ' ')) end++;
+                            while (end < len && (buffer[end] != '.' && buffer[end] != ' ')) end++;
+                            memmove(buffer + ui.cursor_pos, buffer + end, len - end + 1);
+                        } else {
+                            memmove(buffer + ui.cursor_pos, buffer + ui.cursor_pos + 1, len - ui.cursor_pos);
+                        }
+                        changed = true;
+                    }
+                }
+            } else if (typing && len < buffer_size - 1) {
+                memmove(buffer + ui.cursor_pos + 1, buffer + ui.cursor_pos, len - ui.cursor_pos + 1);
+                buffer[ui.cursor_pos] = ui.last_char;
+                ui.cursor_pos++;
                 changed = true;
             }
         }
+        
+        if (ui.paste_requested) {
+            // We need a memory arena for OS_GetClipboardText.
+            // Since UI doesn't have its own arena passed everywhere, 
+            // for MVP/Handmade simplicity we might use a transient arena or 
+            // assume OS_GetClipboardText returns a static buffer or we pass it in.
+            // Actually, OS_GetClipboardText signature I added takes an arena.
+            // Let's assume we use a temporary arena if available, or just a small buffer for now.
+            // Actually, main.c has arenas. 
+            // Let's try to get a temporary string from OS.
+            
+            // For now, let's just use a fixed buffer approach for OS_GetClipboardText if arena is NULL?
+            // Or we add a way to get text without arena?
+            // Let's stick to the signature but maybe use a local stack one if reasonable? No.
+            // Let's assume we can use a small stack arena for this call.
+            
+            uint8_t temp_mem[4096];
+            MemoryArena transient_arena;
+            transient_arena.base = temp_mem;
+            transient_arena.size = sizeof(temp_mem);
+            transient_arena.used = 0;
+            
+            const char *clipboard = OS_GetClipboardText(&transient_arena);
+            if (clipboard && clipboard[0]) {
+                int len = strlen(buffer);
+                int clip_len = strlen(clipboard);
+                int remaining_space = buffer_size - 1 - len;
+                int to_copy = (clip_len < remaining_space) ? clip_len : remaining_space;
+                
+                if (to_copy > 0) {
+                    // Make space for the pasted text
+                    memmove(buffer + ui.cursor_pos + to_copy, buffer + ui.cursor_pos, len - ui.cursor_pos + 1);
+                    // Insert the pasted text
+                    memcpy(buffer + ui.cursor_pos, clipboard, to_copy);
+                    buffer[len + to_copy] = 0; // Null-terminate the new string
+                    ui.cursor_pos += to_copy;
+                    changed = true;
+                }
+            }
+        }
     }
-    
-    Render_DrawText(buffer, x + 10, y + (h/2) - 8, 2.0f, 0.9f, 0.9f, 0.9f, 1.0f);
-    
-    if (is_active) {
-         int cursor_x = x + 10 + (strlen(buffer) * 16);
-         Render_DrawRect(cursor_x, y + (h/2) - 8, 2, 16, 0.8f, 0.8f, 0.9f, 1.0f);
+
+    // Center text vertically
+    Render_DrawText(buffer, x + 10, y + (h - 18) / 2, 2.25f, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    // Draw cursor
+    if (is_active && (int)(OS_GetTime() * 2) % 2 == 0) {
+        char sub[256];
+        int sub_len = (ui.cursor_pos < 255) ? ui.cursor_pos : 255;
+        memcpy(sub, buffer, sub_len);
+        sub[sub_len] = 0;
+        float tw = Render_GetTextWidth(sub, 2.25f);
+        float th = 28.0f; // Cursor height
+        // Vertically center cursor
+        Render_DrawRect(x + 10 + tw, y + (h - th) / 2, 2, th, 1.0f, 1.0f, 1.0f, 1.0f);
     }
-    
+
     return changed;
 }
 

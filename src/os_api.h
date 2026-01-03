@@ -49,4 +49,9 @@ typedef enum {
 
 void OS_SetCursor(WindowContext *window, OS_CursorType cursor);
 
+// Clipboard & Shortcuts
+const char *OS_GetClipboardText(MemoryArena *arena);
+bool OS_IsPastePressed(void);
+bool OS_IsCtrlDown(void);
+
 #endif // HARMONY_OS_API_H

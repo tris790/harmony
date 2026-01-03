@@ -592,8 +592,10 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         OS_GetMouseState(window, &mx, &my, &mdown);
         int mscroll = OS_GetMouseScroll(window);
         char c = OS_GetLastChar(window);
+        bool paste = OS_IsPastePressed();
+        bool ctrl = OS_IsCtrlDown();
         
-        UI_BeginFrame(w, h, mx, my, mdown, mscroll, c);
+        UI_BeginFrame(w, h, mx, my, mdown, mscroll, c, paste, ctrl);
         
         // Draw Background
         // Mocha Base: #1e1e2e -> 0.12, 0.12, 0.18

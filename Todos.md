@@ -10,8 +10,8 @@ todos:
 - [x] remove fake audio sources 
 - [x] refresh audio sources on dropdown click (optimized for efficiency)
 - [x] some app can have multiple audio sources (firefox) is there a better way to handle this? (query metedata or index maybe)
-- [ ] change mouse cursor based on what is selected/hovered (make sure to not overwhelm the OS, we are a immediate mode ui so do what is best for this scenario)
-- [ ] allow pasting of ip address
+- [x] change mouse cursor based on what is selected/hovered (make sure to not overwhelm the OS, we are a immediate mode ui so do what is best for this scenario)
+- [x] allow pasting of ip address
 - [ ] allow advanced editing in input box (ctrl + delete, holding delete, holding a key to input)
 - [ ] add a way for the user to copy is public ip address to give to another user to connect accross the internet
 - [ ] rename default system audio to all system audio

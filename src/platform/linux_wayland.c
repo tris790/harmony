@@ -31,6 +31,8 @@ static struct xdg_wm_base *wm_base;
 static struct zxdg_decoration_manager_v1 *decoration_manager;
 static struct wl_seat *seat;
 static struct wl_shm *shm;
+static struct wl_data_device_manager *data_device_manager;
+static struct wl_data_device *data_device;
 
 // --- Input Globals ---
 static struct wl_pointer *g_pointer = NULL;
@@ -44,6 +46,32 @@ static struct wl_cursor *g_cursors[OS_CURSOR_COUNT] = {0};
 static struct wl_surface *g_cursor_surface = NULL;
 static uint32_t g_last_pointer_serial = 0;
 static OS_CursorType g_current_cursor_type = OS_CURSOR_ARROW;
+
+static struct wl_data_offer *g_active_offer = NULL;
+static bool g_ctrl_down = false;
+static bool g_paste_requested = false;
+
+static int32_t g_repeat_rate = 0;
+static int32_t g_repeat_delay = 0;
+static uint32_t g_repeat_key = 0;
+static double g_next_repeat_time = 0;
+
+// --- Data Device ---
+static void data_offer_offer(void *data, struct wl_data_offer *wl_data_offer, const char *mime_type) {
+    // We only care about text
+}
+static const struct wl_data_offer_listener data_offer_listener = { .offer = data_offer_offer };
+
+static void data_device_data_offer(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *offer) {
+    wl_data_offer_add_listener(offer, &data_offer_listener, NULL);
+}
+static void data_device_selection(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *offer) {
+    g_active_offer = offer;
+}
+static const struct wl_data_device_listener data_device_listener = {
+    .data_offer = data_device_data_offer,
+    .selection = data_device_selection,
+};
 
 // --- Window Context ---
 struct WindowContext {
@@ -127,39 +155,62 @@ static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t
 static void keyboard_leave(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, struct wl_surface *surface) {
 }
 
+static void keyboard_modifiers(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group) {
+    // We'll use keyboard_key for modifier state as xkbcommon isn't used for raw scancodes here.
+}
+
 static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
-    if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-        // Simple QWERTY scancode map (offset by 8 in Linux/X11 usually, but Wayland gives evdev codes)
-        // Evdev codes:
-        // 1: ESC
-        // 2-11: 1234567890
-        // 12: -
-        // 13: =
-        // 14: BS
-        // 16-25: QWERTYUIOP
-        // 52: .
-        
-        // ESC key handling
+    bool pressed = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
+    if (key == 29 || key == 97) g_ctrl_down = pressed; // Left Ctrl=29, Right Ctrl=97
+
+    if (pressed) {
         if (key == 1) {
             g_escape_pressed = true;
             return;
         }
         
-        // This is extremely hacky but fits "Handmade" minimal scope for just typing an IP.
+        if (key == 47 && g_ctrl_down) { // 'V' is 47
+            g_paste_requested = true;
+            return;
+        }
+
+        // Simple QWERTY scancode map
         char c = 0;
         if (key >= 2 && key <= 10) c = '1' + (key - 2);
         if (key == 11) c = '0';
         if (key == 52) c = '.';
         if (key == 14) c = '\b'; // Backspace
+        if (key == 111) c = '\x7f'; // Delete
+        
+        if (key == 105) c = '\x11'; // Left
+        if (key == 106) c = '\x12'; // Right
+        if (key == 102) c = '\x13'; // Home
+        if (key == 107) c = '\x14'; // End
+        
+        if (g_ctrl_down) {
+            if (key == 44) c = '\x1a'; // Ctrl+Z (Undo)
+            if (key == 21) c = '\x19'; // Ctrl+Y (Redo)
+        }
         
         last_char = c;
+
+        // Start repeat
+        if (g_repeat_rate > 0) {
+            g_repeat_key = key;
+            g_next_repeat_time = OS_GetTime() + (double)g_repeat_delay / 1000.0;
+        }
+    } else {
+        // Stop repeat if this key was repeating
+        if (key == g_repeat_key) {
+            g_repeat_key = 0;
+            g_next_repeat_time = 0;
+        }
     }
 }
 
-static void keyboard_modifiers(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group) {
-}
-
 static void keyboard_repeat_info(void *data, struct wl_keyboard *wl_keyboard, int32_t rate, int32_t delay) {
+    g_repeat_rate = rate;
+    g_repeat_delay = delay;
 }
 
 static const struct wl_keyboard_listener keyboard_listener = {
@@ -223,6 +274,11 @@ static void seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capa
         keyboard = wl_seat_get_keyboard(wl_seat);
         wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL); 
     }
+
+    if (data_device_manager && !data_device) {
+        data_device = wl_data_device_manager_get_data_device(data_device_manager, wl_seat);
+        wl_data_device_add_listener(data_device, &data_device_listener, NULL);
+    }
 }
 
 static const struct wl_seat_listener seat_listener = {
@@ -259,6 +315,8 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         decoration_manager = wl_registry_bind(registry, name, &zxdg_decoration_manager_v1_interface, 1);
     } else if (strcmp(interface, wl_shm_interface.name) == 0) {
         shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+    } else if (strcmp(interface, wl_data_device_manager_interface.name) == 0) {
+        data_device_manager = wl_registry_bind(registry, name, &wl_data_device_manager_interface, 3);
     }
 }
 
@@ -411,6 +469,36 @@ bool OS_ProcessEvents(WindowContext *window) {
     wl_display_read_events(display);
     wl_display_dispatch_pending(display);
 
+    // Handle repeat
+    if (g_repeat_key != 0 && g_repeat_rate > 0) {
+        double now = OS_GetTime();
+        if (now >= g_next_repeat_time) {
+            // Trigger repeat
+            uint32_t key = g_repeat_key;
+            char c = 0;
+            if (key >= 2 && key <= 10) c = '1' + (key - 2);
+            if (key == 11) c = '0';
+            if (key == 52) c = '.';
+            if (key == 14) c = '\b'; // Backspace
+            if (key == 111) c = '\x7f'; // Delete
+            if (key == 105) c = '\x11'; // Left
+            if (key == 106) c = '\x12'; // Right
+            if (key == 102) c = '\x13'; // Home
+            if (key == 107) c = '\x14'; // End
+            
+            if (g_ctrl_down) {
+                if (key == 44) c = '\x1a'; // Ctrl+Z
+                if (key == 21) c = '\x19'; // Ctrl+Y
+            }
+            
+            if (c != 0) {
+                last_char = c;
+            }
+            
+            g_next_repeat_time = now + 1.0 / (double)g_repeat_rate;
+        }
+    }
+
     return !window->should_close;
 }
 
@@ -445,6 +533,41 @@ int OS_GetMouseScroll(WindowContext *window) {
         g_mouse_scroll_delta += 10.0;
     }
     return scroll;
+}
+
+const char* OS_GetClipboardText(MemoryArena *arena) {
+    if (!g_active_offer) return "";
+
+    int fds[2];
+    if (pipe(fds) == -1) return "";
+
+    wl_data_offer_receive(g_active_offer, "text/plain", fds[1]);
+    close(fds[1]);
+    wl_display_flush(display);
+    wl_display_roundtrip(display);
+
+    char temp[1024];
+    int n = read(fds[0], temp, sizeof(temp) - 1);
+    close(fds[0]);
+
+    if (n > 0) {
+        temp[n] = 0;
+        char *result = PushArray(arena, n + 1, char);
+        memcpy(result, temp, n + 1);
+        return result;
+    }
+
+    return "";
+}
+
+bool OS_IsPastePressed(void) {
+    bool p = g_paste_requested;
+    g_paste_requested = false;
+    return p;
+}
+
+bool OS_IsCtrlDown(void) {
+    return g_ctrl_down;
 }
 
 // Listeners moved above seat_capabilities
