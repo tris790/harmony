@@ -271,7 +271,7 @@
     </div>
 
     <div id="container">
-        <video id="player" autoplay muted playsinline></video>
+        <video id="player" autoplay playsinline></video>
         <div id="status">
             <span class="status-dot"></span>
             <span id="status-text" class="status-text">Disconnected</span>
@@ -307,7 +307,7 @@
         // JMuxer instance
         const jmuxer = new JMuxer({
             node: 'player',
-            mode: 'video',
+            mode: 'both',
             flushingTime: 0,
             maxDelay: 100,
             clearBuffer: true,
@@ -379,11 +379,12 @@
             ws.onmessage = async (event) => {
                 let data = new Uint8Array(event.data);
 
-                // Prepend 4 bytes for frame_id
-                if (data.length < 4) return;
+                // Prepend 4 bytes for frame_id, 1 byte for type
+                if (data.length < 5) return;
 
                 const frameIdBytes = data.slice(0, 4);
-                const actualData = data.slice(4);
+                const packetType = data[4];
+                const actualData = data.slice(5);
 
                 let decryptedData = actualData;
                 if (cryptoKey) {
@@ -395,8 +396,7 @@
                             {
                                 name: 'AES-CTR',
                                 counter: iv,
-                                length: 64 // Use 64 bits of the IV for counter (standard-ish if we don't specify more)
-                                // Actually, SubtleCrypto expects 128-bit 'counter' as the initial counter block.
+                                length: 64
                             },
                             cryptoKey,
                             actualData
@@ -408,12 +408,17 @@
                     }
                 }
 
-                if (!frameReceived) {
-                    console.log('First frame received! Transitioning to streaming.');
+                if (!frameReceived && packetType === 0) {
+                    console.log('First video frame received! Transitioning to streaming.');
                     frameReceived = true;
                     setState(STATE_STREAMING);
                 }
-                jmuxer.feed({ video: decryptedData });
+
+                if (packetType === 0) {
+                    jmuxer.feed({ video: decryptedData });
+                } else if (packetType === 4) {
+                    jmuxer.feed({ audio: decryptedData });
+                }
             };
 
             ws.onclose = () => {

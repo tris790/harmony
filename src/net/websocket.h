@@ -11,7 +11,7 @@ typedef struct WebSocketContext WebSocketContext;
 WebSocketContext* WS_Init(MemoryArena *arena, int port);
 
 // Broadcast binary data to all connected clients
-void WS_Broadcast(WebSocketContext *ctx, uint32_t frame_id, const void *data, size_t size);
+void WS_Broadcast(WebSocketContext *ctx, uint8_t type, uint32_t frame_id, const void *data, size_t size);
 
 // Poll for new connections and handle incoming control frames (ping/close)
 // Should be called every frame

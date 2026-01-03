@@ -209,14 +209,14 @@ void WS_Poll(WebSocketContext *ctx) {
     }
 }
 
-void WS_Broadcast(WebSocketContext *ctx, uint32_t frame_id, const void *data, size_t size) {
+void WS_Broadcast(WebSocketContext *ctx, uint8_t type, uint32_t frame_id, const void *data, size_t size) {
     if (!ctx) return;
     
     // Construct WebSocket Frame
     // FIN=1, Opcode=2 (Binary)
     uint8_t header[10];
     int header_len = 2;
-    size_t total_payload_size = size + 4; // Data + 4 byte frame_id
+    size_t total_payload_size = size + 4 + 1; // Data + 4 byte frame_id + 1 byte type
     
     header[0] = 0x82; 
     
@@ -242,23 +242,21 @@ void WS_Broadcast(WebSocketContext *ctx, uint32_t frame_id, const void *data, si
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (ctx->clients[i].active && ctx->clients[i].handshake_complete) {
-            struct iovec iov[3];
+            struct iovec iov[4];
             iov[0].iov_base = header;
             iov[0].iov_len = header_len;
             iov[1].iov_base = &net_frame_id;
             iov[1].iov_len = 4;
-            iov[2].iov_base = (void*)data;
-            iov[2].iov_len = size;
+            iov[2].iov_base = &type;
+            iov[2].iov_len = 1;
+            iov[3].iov_base = (void*)data;
+            iov[3].iov_len = size;
 
-            ssize_t total_expected = header_len + 4 + size;
-            ssize_t n = writev(ctx->clients[i].sockfd, iov, 3);
+            ssize_t total_expected = header_len + 4 + 1 + size;
+            ssize_t n = writev(ctx->clients[i].sockfd, iov, 4);
             
             if (n < total_expected) {
                 if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                    // Buffer full - Real-time stream: skip frame or disconnect? 
-                    // Better to disconnect as protocol state is now unknown if partial 
-                    // (although writev is more 'atomic' at the system call level, 
-                    // it doesn't guarantee the whole amount is sent if the pipe is full).
                     printf("WS: Send buffer full, disconnecting client [%d]\n", i);
                 } else {
                     printf("WS: Write error or partial write (%zd/%zd), disconnecting [%d]\n", n, total_expected, i);

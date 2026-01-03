@@ -323,6 +323,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                 Audio_Encode(audio_encoder, aframe, &encoded_audio);
                 if (encoded_audio.size > 0) {
                     Protocol_SendAudio(&packetizer, encoded_audio.data, encoded_audio.size, Net_SendPacketCallback, &net_cb);
+                    WS_Broadcast(ws, PACKET_TYPE_AUDIO, packetizer.frame_id_counter, encoded_audio.data, encoded_audio.size);
                 }
             }
         }
@@ -383,7 +384,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                     }
                     
                     // 2. Send via WebSocket (New)
-                    WS_Broadcast(ws, current_frame_id, pkt.data, pkt.size);
+                    WS_Broadcast(ws, PACKET_TYPE_VIDEO, current_frame_id, pkt.data, pkt.size);
                     
                     frames_encoded++;
                     time_since_last_send = 0.0f; // Reset keepalive timer
