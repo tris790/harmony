@@ -52,6 +52,7 @@ static OS_CursorType g_current_cursor_type = OS_CURSOR_ARROW;
 
 static struct wl_data_offer *g_active_offer = NULL;
 static bool g_ctrl_down = false;
+static bool g_shift_down = false;
 static bool g_paste_requested = false;
 
 // --- Clipboard Copy State ---
@@ -258,6 +259,7 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t s
     (void)time;
     bool pressed = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
     if (key == 29 || key == 97) g_ctrl_down = pressed; // Left Ctrl=29, Right Ctrl=97
+    if (key == 42 || key == 54) g_shift_down = pressed; // Left Shift=42, Right Shift=54
 
     if (pressed) {
         if (g_xkb_state) {
@@ -268,9 +270,11 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t s
             if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) g_enter_pressed = true;
             
             // Check for Ctrl/Modifiers via symbols or state
-            // Re-detect Ctrl state just in case
+            // Re-detect Ctrl/Shift state just in case
             g_ctrl_down = (xkb_state_mod_name_is_active(g_xkb_state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_DEPRESSED) ||
                            xkb_state_mod_name_is_active(g_xkb_state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_LATCHED));
+            g_shift_down = (xkb_state_mod_name_is_active(g_xkb_state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_DEPRESSED) ||
+                            xkb_state_mod_name_is_active(g_xkb_state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_LATCHED));
 
             if (sym == XKB_KEY_v && g_ctrl_down) {
                 g_paste_requested = true;
@@ -743,6 +747,10 @@ bool OS_IsPastePressed(void) {
 
 bool OS_IsCtrlDown(void) {
     return g_ctrl_down;
+}
+
+bool OS_IsShiftDown(void) {
+    return g_shift_down;
 }
 
 // Listeners moved above seat_capabilities

@@ -954,9 +954,10 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config,
     char c = OS_GetLastChar(window);
     bool paste = OS_IsPastePressed();
     bool ctrl = OS_IsCtrlDown();
+    bool shift = OS_IsShiftDown();
     bool enter = OS_IsEnterPressed();
 
-    UI_BeginFrame(w, h, mx, my, mdown, mscroll, c, paste, ctrl);
+    UI_BeginFrame(w, h, mx, my, mdown, mscroll, c, paste, ctrl, shift);
 
     // Draw Background
     // Mocha Base: #1e1e2e -> 0.12, 0.12, 0.18
@@ -1042,7 +1043,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config,
     UI_CenterNext(0);
     UI_Label("Target IP Address:", 0, cy + 20, 2.0f);
 
-    int input_w = 250;
+    int input_w = 350;
     UI_CenterNext(input_w);
     UI_TextInput("ip_input", config->target_ip, 64, 0, cy + 50, input_w, 50,
                  UI_INPUT_NUMERIC);

@@ -63,6 +63,7 @@ const char *OS_GetClipboardText(MemoryArena *arena);
 void OS_SetClipboardText(const char *text);
 bool OS_IsPastePressed(void);
 bool OS_IsCtrlDown(void);
+bool OS_IsShiftDown(void);
 
 // Threading & Synchronization
 typedef struct OS_Thread OS_Thread;

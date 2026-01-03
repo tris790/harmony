@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 void UI_Init(MemoryArena *arena);
-void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y, bool mouse_down, int mouse_scroll, char input_char, bool paste_requested, bool ctrl_held);
+void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y, bool mouse_down, int mouse_scroll, char input_char, bool paste_requested, bool ctrl_held, bool shift_held);
 void UI_EndFrame();
 
 void UI_CenterNext(int width);
