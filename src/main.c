@@ -11,6 +11,8 @@
 #include "net/protocol.h" // For Packetizer
 #include <stdlib.h> // For getenv
 
+#include "net/websocket.h"
+
 // Forward Declaration (should be in a header)
 
 
@@ -160,6 +162,14 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
         return 1;
     }
     
+    // Initialise WebSocket Server on port 8080
+    WebSocketContext *ws = WS_Init(arena, 8080);
+    if (ws) {
+        printf("Host: WebSocket Server listening on port 8080\n");
+    } else {
+        printf("Host: Failed to start WebSocket Server on 8080\n");
+    }
+    
     // Viewer address tracking - will be updated when we receive punch packets
     char viewer_ip[16] = {0};
     bool has_viewer = false;
@@ -200,6 +210,9 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
             result = 2;
             break;
         }
+        
+        // Poll WebSocket
+        WS_Poll(ws);
         
         // Get window size for UI
         int w = 1280, h = 720;
@@ -248,7 +261,20 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
         }
         
         // Only send data when we have a confirmed viewer (after UDP punch)
-        if (!has_viewer) {
+        // OR if we have WebSocket clients connected (we can't easily check count here without exposing implementation,
+        // but it's safe to capture and encode if we wanted to support WS-only mode.
+        // For now, let's keep the "Wait for viewer" logic for UDP, but maybe relax it if WS is active?
+        // Actually, WS broadcast just sends if clients exist.
+        // HACK: Allow capture if we have WS, but we don't know if we have WS clients here easily.
+        // Let's just proceed to capture loop. If no viewer and no WS clients, it's wasted CPU, but that's fine.
+        // Actually, the original code skipped capture if !has_viewer. We should change that to allow ALWAYS capturing 
+        // if we are hosting, so WS works even without a UDP viewer.
+        
+        // Determine if we should be active (UDP Viewer OR WebSocket active - simplifying to ALWAYS active in Host mode for now)
+        // Or better: Just check `has_viewer` for UDP-specific branch, but allow generic capture.
+        bool active = has_viewer || (ws != NULL); 
+
+        if (!active) {
             // Still waiting for viewer - just poll capture to keep it active
             Capture_Poll(capture);
             Capture_GetFrame(capture); // Discard frames while waiting
@@ -256,7 +282,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
             // Draw waiting UI
             Render_Clear(0.1f, 0.1f, 0.15f, 1.0f);
             char wait_msg[128];
-            snprintf(wait_msg, sizeof(wait_msg), "Waiting for viewer at %s:9999...", target_ip);
+            snprintf(wait_msg, sizeof(wait_msg), "Waiting for viewer at %s:9999 (or WS:8080)...", target_ip);
             float tw = Render_GetTextWidth(wait_msg, 2.0f);
             Render_DrawText(wait_msg, (w - tw) / 2.0f, h/2.0f, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
             OS_SwapBuffers(window);
@@ -330,7 +356,14 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                 Codec_EncodeFrame(encoder, frame, &packet_arena, &pkt);
             
                 if (pkt.size > 0) {
-                    Protocol_SendFrame(&packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
+                    // 1. Send via UDP (Original)
+                    if (has_viewer) {
+                        Protocol_SendFrame(&packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
+                    }
+                    
+                    // 2. Send via WebSocket (New)
+                    WS_Broadcast(ws, pkt.data, pkt.size);
+                    
                     frames_encoded++;
                     time_since_last_send = 0.0f; // Reset keepalive timer
                 }
@@ -359,6 +392,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     if (audio_encoder) Audio_CloseEncoder(audio_encoder);
     if (capture) Capture_Close(capture);
     if (net) Net_Close(net);
+    if (ws) WS_Shutdown(ws);
 
     return result;
 }

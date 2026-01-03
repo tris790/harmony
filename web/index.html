@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Harmony Web Viewer</title>
+    <script src="jmuxer.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1e1e2e; /* Mocha Base */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #cdd6f4;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #container {
+            position: relative;
+            width: 100%;
+            height: 100%; /* Full screen by default */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        video {
+            max-width: 100%;
+            max-height: 100%;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            background: #000;
+        }
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            pointer-events: none;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: #f38ba8; /* Red (Disconnected) */
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .connected .status-dot {
+            background-color: #a6e3a1; /* Green (Connected) */
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <video id="player" autoplay muted playsinline></video>
+        <div id="status" class="">
+            <span class="status-dot"></span>
+            <span id="status-text">Disconnected</span>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('player');
+        const statusDiv = document.getElementById('status');
+        const statusText = document.getElementById('status-text');
+
+        // JMuxer instance
+        const jmuxer = new JMuxer({
+            node: 'player',
+            mode: 'video',
+            flushingTime: 0, // Instant flushing for low latency
+            maxDelay: 100, // Drop frames if delay > 100ms
+            clearBuffer: true,
+            fps: 60, // Optional hint
+            debug: false
+        });
+
+        let ws;
+
+        function connect() {
+            // Connect to WebSocket on the same host, port 8080
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.hostname || 'localhost';
+            const url = `${protocol}//${host}:8080`;
+            
+            console.log(`Connecting to ${url}...`);
+            statusText.innerText = "Connecting...";
+            
+            ws = new WebSocket(url);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                console.log('Connected to Stream');
+                statusDiv.classList.add('connected');
+                statusText.innerText = `Connected to ${host}`;
+            };
+
+            ws.onmessage = (event) => {
+                const data = new Uint8Array(event.data);
+                // Feed H.264 NAL units to JMuxer
+                // JMuxer expects an object with 'video' property for raw H.264
+                jmuxer.feed({
+                    video: data
+                });
+            };
+
+            ws.onclose = () => {
+                console.log('Disconnected');
+                statusDiv.classList.remove('connected');
+                statusText.innerText = "Disconnected (Retrying...)";
+                
+                // Retry connection
+                setTimeout(connect, 1000);
+            };
+
+            ws.onerror = (err) => {
+                console.error('Socket Error:', err);
+                ws.close();
+            };
+        }
+
+        // Auto-play handling (browsers block audio-playing video without interaction, but we are muted)
+        video.addEventListener('click', () => {
+            video.play().catch(console.error);
+        });
+
+        connect();
+    </script>
+</body>
+</html>
