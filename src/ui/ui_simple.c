@@ -764,7 +764,6 @@ void UI_DrawStreamStatus(int w, int h, float time, int frames_encoded,
     float scale_status = is_capturing ? 2.5f : 2.0f;
     float scale_details = 2.0f;
     float scale_footer = 1.6f;
-    float scale_footer = 1.6f;
     
     const char *status_text = is_capturing ? "STREAMING LIVE" : "Waiting for capture...";
     char target_buf[128];
