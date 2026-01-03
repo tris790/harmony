@@ -7,9 +7,16 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
+#include <time.h>
 
 #include "generated/xdg-shell-client-protocol.h"
 #include "../os_api.h"
+
+double OS_GetTime() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
 
 // --- Global Wayland State ---
 static struct wl_display *display;

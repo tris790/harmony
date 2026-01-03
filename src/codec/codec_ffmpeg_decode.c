@@ -1,4 +1,5 @@
 #include "codec_api.h"
+#include "os_api.h"
 #include <libavcodec/avcodec.h>
 
 struct DecoderContext {
@@ -64,10 +65,12 @@ static bool Codec_IsKeyframe(uint8_t *data, size_t size) {
     }
     
     if (!found_any_nal && size > 16) {
-        static int nal_err_counter = 0;
-        if (nal_err_counter++ % 30 == 0) {
+        static double last_nal_log = 0;
+        double now = OS_GetTime();
+        if (now - last_nal_log >= 5.0) {
             printf("Decoder: No NAL start codes found in packet of size %zu! (Header: %02x %02x %02x %02x)\n", 
                    size, data[0], data[1], data[2], data[3]);
+            last_nal_log = now;
         }
     }
     
@@ -85,10 +88,15 @@ void Codec_DecodePacket(DecoderContext *ctx, EncodedPacket *packet, VideoFrame *
         ctx->has_received_keyframe = true;
     }
     
-    // Don't decode until we've received a keyframe - prevents "non-existing PPS" errors
+// Don't decode until we've received a keyframe - prevents "non-existing PPS" errors
     if (!ctx->has_received_keyframe) {
-        printf("Decoder: Skipping packet - waiting for keyframe (has_kf=%d, is_kf=%d)\n", 
-               ctx->has_received_keyframe, is_keyframe);
+        static double last_log_time = 0;
+        double current_time = OS_GetTime();
+        if (current_time - last_log_time >= 5.0) {
+            printf("Decoder: Skipping packet - waiting for keyframe (has_kf=%d, is_kf=%d)\n", 
+                   ctx->has_received_keyframe, is_keyframe);
+            last_log_time = current_time;
+        }
         return;
     }
     

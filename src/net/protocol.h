@@ -4,6 +4,7 @@
 #include "../memory_arena.h"
 #include <string.h>
 #include <stdbool.h>
+#include <unistd.h> // for usleep
 
 // Max UDP payload size (safe MTU - header)
 // MTU 1500 - IP(20) - UDP(8) = 1472. Let's stay safe with 1400.
@@ -75,6 +76,13 @@ static void Protocol_SendData(Packetizer *pz, uint8_t type, void *data, size_t s
 
         offset += chunk_size;
         bytes_remaining -= chunk_size;
+
+        // PACING: Sleep every few packets to prevent flooding UDP buffer
+        // 192KB frame = ~137 packets. 
+        // Sending all back-to-back causes drops.
+        if (i > 0 && i % 10 == 0) {
+            usleep(200); // 0.2ms pause every 10 packets
+        }
     }
 }
 

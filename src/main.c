@@ -41,24 +41,25 @@ static int CalculateTargetBitrate(int width, int height, int fps) {
     int pixels = width * height;
     bool high_fps = (fps >= 50);
     
+    // Aggressively reduced bitrates to prevent UDP packet loss
     // 4K (3840x2160 = 8.3M pixels)
     if (pixels >= 8000000) {
-        return high_fps ? 50000000 : 35000000; // 50 or 35 Mbps
+        return high_fps ? 20000000 : 15000000; // 20 or 15 Mbps
     }
     // 1440p (2560x1440 = 3.7M pixels)
     if (pixels >= 3500000) {
-        return high_fps ? 24000000 : 16000000; // 24 or 16 Mbps
+        return high_fps ? 10000000 : 8000000; // 10 or 8 Mbps
     }
     // 1080p (1920x1080 = 2M pixels)
     if (pixels >= 2000000) {
-        return high_fps ? 12000000 : 8000000; // 12 or 8 Mbps
+        return high_fps ? 6000000 : 4000000; // 6 or 4 Mbps
     }
-    // 720p (1280x720 = 921k pixels)
+    // 720p (1280x720 = 921k pixels) - Most common
     if (pixels >= 900000) {
-        return high_fps ? 7500000 : 5000000; // 7.5 or 5 Mbps
+        return high_fps ? 4000000 : 2500000; // 4 or 2.5 Mbps
     }
     // Lower resolutions - fallback to formula
-    return (int)(width * height * fps * 0.15f);
+    return (int)(width * height * fps * 0.08f);
 }
 
 int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose) {
@@ -409,15 +410,19 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                 if (hdr->frame_id > video_reassembler.active_buffer.frame_id) {
                     if (video_reassembler.active_buffer.frame_id > 0 && 
                         video_reassembler.active_buffer.received_bytes < video_reassembler.active_buffer.total_size) {
-                        static int drop_log_counter = 0;
-                        if (drop_log_counter++ % 30 == 0) { // Log only once every ~30 drops
-                            printf("Viewer: DROPPED FRAME %u! Receive count: %d. Received %zu/%zu bytes. (Next: %u)\n", 
+                    if (video_reassembler.active_buffer.frame_id > 0 && 
+                        video_reassembler.active_buffer.received_bytes < video_reassembler.active_buffer.total_size) {
+                        static double last_drop_log = 0;
+                        double now = OS_GetTime();
+                        if (now - last_drop_log >= 5.0) { 
+                            printf("Viewer: DROPPED FRAME %u! Received %zu/%zu bytes. (Next: %u)\n", 
                                 video_reassembler.active_buffer.frame_id,
-                                drop_log_counter,
                                 video_reassembler.active_buffer.received_bytes,
                                 video_reassembler.active_buffer.total_size,
                                 hdr->frame_id);
+                            last_drop_log = now;
                         }
+                    }
                     }
                 }
                 res = Protocol_HandlePacket(&video_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
