@@ -112,7 +112,12 @@ void Codec_DecodePacket(DecoderContext *ctx, EncodedPacket *packet, VideoFrame *
 
     int ret = avcodec_send_packet(ctx->codec_ctx, av_pkt);
     if (ret < 0) {
-        fprintf(stderr, "Codec_DecodePacket: Error sending packet for decoding\n");
+        static double last_send_error = 0;
+        double now = OS_GetTime();
+        if (now - last_send_error >= 5.0) {
+            fprintf(stderr, "Codec_DecodePacket: Error sending packet for decoding\n");
+            last_send_error = now;
+        }
         av_packet_free(&av_pkt);
         return;
     }
@@ -130,7 +135,12 @@ void Codec_DecodePacket(DecoderContext *ctx, EncodedPacket *packet, VideoFrame *
             out_frame->linesize[i] = ctx->frame_yuv->linesize[i];
         }
     } else if (ret != AVERROR(EAGAIN)) {
-        fprintf(stderr, "Codec_DecodePacket: Error during decoding\n");
+        static double last_decode_error = 0;
+        double now = OS_GetTime();
+        if (now - last_decode_error >= 5.0) {
+            fprintf(stderr, "Codec_DecodePacket: Error during decoding\n");
+            last_decode_error = now;
+        }
     }
 
     // Do not free packet data since it belongs to us/arena, but free the wrapper structure

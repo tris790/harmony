@@ -482,6 +482,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     
     int result = 0;
     while (OS_ProcessEvents(window)) {
+        double now = OS_GetTime();
         if (OS_IsF11Pressed()) { static bool fs = false; fs = !fs; OS_SetFullscreen(window, fs); }
         // Check for ESC to return to menu
         if (OS_IsEscapePressed()) {
@@ -583,6 +584,27 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                         uint32_t net_id = htonl(video_reassembler.active_buffer.frame_id);
                         memcpy(iv, &net_id, 4);
                         AES_CTR_Xcrypt(&aes_ctx, iv, (uint8_t*)frame_data, frame_size);
+
+                        // Simple validation: check for H.264 start code (0x000001 or 0x00000001)
+                        uint8_t *d = (uint8_t*)frame_data;
+                        bool valid = false;
+                        if (frame_size >= 3) {
+                            if (d[0] == 0 && d[1] == 0 && d[2] == 1) {
+                                valid = true;
+                            } else if (frame_size >= 4 && d[0] == 0 && d[1] == 0 && d[2] == 0 && d[3] == 1) {
+                                valid = true;
+                            }
+                        }
+
+                        if (!valid) {
+                            static double last_warn_time = 0;
+                            if (now - last_warn_time > 2.0) {
+                                printf("Viewer: Decryption failed (invalid start code). Wrong password?\n");
+                                last_warn_time = now;
+                            }
+                            received_any_packet = true;
+                            continue; // Skip decoding
+                        }
                     }
 
                     // Decode video
