@@ -607,15 +607,13 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         // Title
         // Lavender: #b4befe -> 0.71, 0.75, 1.00
         // Scale 4.0 for title
-        const char *title = "Harmony Screen Share";
-        float title_tw = Render_GetTextWidth(title, 4.0f);
-        Render_DrawText(title, cx - (title_tw / 2.0f), cy - 250, 4.0f, 0.71f, 0.75f, 1.0f, 1.0f);
+        UI_CenterNext(0); // 0 width means text width
+        UI_Label("Harmony Screen Share", 0, cy - 250, 4.0f);
         
         // Mode Selection Labels (Subtitles)
         // Subtext1: #a6adc8 
-        const char *mode_label = "Select Mode:";
-        float mode_tw = Render_GetTextWidth(mode_label, 2.0f);
-        Render_DrawText(mode_label, cx - (mode_tw / 2.0f), cy - 180, 2.0f, 0.65f, 0.68f, 0.78f, 1.0f);
+        UI_CenterNext(0);
+        UI_Label("Select Mode:", 0, cy - 180, 2.0f);
         
         // Buttons
         // Host Button
@@ -639,24 +637,24 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         }
         
         // IP Config
-        const char *ip_label = "Target IP Address:";
-        float ip_tw = Render_GetTextWidth(ip_label, 2.0f);
-        Render_DrawText(ip_label, cx - (ip_tw / 2.0f), cy + 20, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
+        UI_CenterNext(0);
+        UI_Label("Target IP Address:", 0, cy + 20, 2.0f);
         
         int input_w = 250;
-        UI_TextInput("ip_input", config->target_ip, 64, cx - (input_w / 2), cy + 50, input_w, 50);
+        UI_CenterNext(input_w);
+        UI_TextInput("ip_input", config->target_ip, 64, 0, cy + 50, input_w, 50);
         
         // Audio Source List
         if (config->is_host) {
             int audio_y = cy + 120;
-            const char *audio_label = "Audio Source:";
-            float audio_tw = Render_GetTextWidth(audio_label, 2.0f);
-            Render_DrawText(audio_label, cx - (audio_tw / 2.0f), audio_y, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
+            UI_CenterNext(0);
+            UI_Label("Audio Source:", 0, audio_y, 2.0f);
             
             // List Widget (Now Dropdown)
             int dropdown_w = 400;
+            UI_CenterNext(dropdown_w);
             if (UI_Dropdown("audio_list", full_list.nodes, full_list.count, &config->selected_audio_node_id, 
-                    cx - (dropdown_w / 2), audio_y + 30, dropdown_w, 40)) 
+                    0, audio_y + 30, dropdown_w, 40)) 
             {
                 // Refresh on open!
                 ArenaClear(&temp_arena);
@@ -681,7 +679,8 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         // audio_y is cy + 120. So ends at cy + 190.
         // Button at cy + 220 is good spacing.
         
-        if (UI_Button("START HARMONY", cx - 125, cy + 220, 250, 70)) {
+        UI_CenterNext(250);
+        if (UI_Button("START HARMONY", 0, cy + 220, 250, 70)) {
             config->start_app = true;
             UI_EndFrame();
             OS_SwapBuffers(window);

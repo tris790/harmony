@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "generated/xdg-shell-client-protocol.h"
+#include "generated/xdg-decoration-client-protocol.h"
 #include "../os_api.h"
 
 double OS_GetTime() {
@@ -23,6 +24,7 @@ static struct wl_display *display;
 static struct wl_registry *registry;
 static struct wl_compositor *compositor;
 static struct xdg_wm_base *wm_base;
+static struct zxdg_decoration_manager_v1 *decoration_manager;
 static struct wl_seat *seat;
 
 // --- Input Globals ---
@@ -41,6 +43,7 @@ struct WindowContext {
     EGLDisplay egl_display;
     EGLContext egl_context;
     EGLSurface egl_surface;
+    struct zxdg_toplevel_decoration_v1 *decoration;
     int width, height;
     bool configured;
     bool should_close;
@@ -236,6 +239,8 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
     } else if (strcmp(interface, wl_seat_interface.name) == 0) {
         seat = wl_registry_bind(registry, name, &wl_seat_interface, 1);
         wl_seat_add_listener(seat, &seat_listener, NULL);
+    } else if (strcmp(interface, zxdg_decoration_manager_v1_interface.name) == 0) {
+        decoration_manager = wl_registry_bind(registry, name, &zxdg_decoration_manager_v1_interface, 1);
     }
 }
 
@@ -283,6 +288,11 @@ WindowContext* OS_CreateWindow(MemoryArena *arena, int width, int height, const 
     
     xdg_toplevel_set_title(win->xdg_toplevel, title);
     xdg_toplevel_set_app_id(win->xdg_toplevel, "harmony");
+    
+    if (decoration_manager) {
+        win->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(decoration_manager, win->xdg_toplevel);
+        zxdg_toplevel_decoration_v1_set_mode(win->decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
 
     win->surface = win->surface; // Keep ref
     

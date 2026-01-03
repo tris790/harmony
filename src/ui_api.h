@@ -8,8 +8,10 @@ void UI_Init(MemoryArena *arena);
 void UI_BeginFrame(int window_width, int window_height, int mouse_x, int mouse_y, bool mouse_down, int mouse_scroll, char input_char);
 void UI_EndFrame();
 
+void UI_CenterNext(int width);
+
 bool UI_Button(const char *label, int x, int y, int w, int h);
-void UI_Label(const char *text, int x, int y);
+void UI_Label(const char *text, int x, int y, float scale);
 bool UI_TextInput(const char *id, char *buffer, int buffer_size, int x, int y, int w, int h);
 #include "audio_api.h" // For AudioNodeInfo
 bool UI_List(const char *id, AudioNodeInfo *items, int count, uint32_t *selected_id, int x, int y, int w, int h);

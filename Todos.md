@@ -6,7 +6,7 @@ todos:
 - [x] dont log for each instead lof found N sources
 - [x] make the dropdown follow styles of the rest of the app
 - [x] center the ui components (robustly using Render_GetTextWidth)
-- [ ] make the app have a desktop titlebar (use os not ourself in opengl)
+- [x] make the app have a desktop titlebar (use os not ourself in opengl)
 - [x] remove fake audio sources 
 - [x] refresh audio sources on dropdown click (optimized for efficiency)
 - [ ] some app can have multiple audio sources (firefox) is there a better way to handle this? (query metedata or index maybe)
