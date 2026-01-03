@@ -457,8 +457,10 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                 // Metadata is single-packet, extract directly
                 uint8_t *payload = buf + sizeof(PacketHeader);
                 size_t payload_size = peek_header->payload_size;
-                if (payload_size == sizeof(StreamMetadata)) {
-                    memcpy(&stream_meta, payload, sizeof(StreamMetadata));
+                // Use >= to handle version differences (older hosts may send smaller structs)
+                if (payload_size >= sizeof(StreamMetadata) - sizeof(uint32_t) && payload_size <= sizeof(StreamMetadata)) {
+                    memset(&stream_meta, 0, sizeof(StreamMetadata));
+                    memcpy(&stream_meta, payload, payload_size);
                 }
                 received_any_packet = true;
                 continue;
