@@ -1,4 +1,6 @@
 #include "websocket.h"
+#include "../os_api.h"
+#include "../memory_arena.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +24,7 @@ typedef struct WSClient {
 struct WebSocketContext {
     int server_fd;
     WSClient clients[MAX_CLIENTS];
+    OS_Mutex *mutex;
 };
 
 // --- Minimal SHA1 Implementation (Public Domain style) ---
@@ -128,6 +131,8 @@ WebSocketContext* WS_Init(MemoryArena *arena, int port) {
     int flags = fcntl(ctx->server_fd, F_GETFL, 0);
     fcntl(ctx->server_fd, F_SETFL, flags | O_NONBLOCK);
 
+    ctx->mutex = OS_MutexCreate();
+
     return ctx;
 }
 
@@ -154,6 +159,8 @@ static void perform_handshake(int fd, const char *key) {
 
 void WS_Poll(WebSocketContext *ctx) {
     if (!ctx) return;
+
+    OS_MutexLock(ctx->mutex);
 
     // Accept new connections
     int new_fd = accept(ctx->server_fd, NULL, NULL);
@@ -207,10 +214,13 @@ void WS_Poll(WebSocketContext *ctx) {
             printf("WS: Client disconnected [%d]\n", i);
         }
     }
+    OS_MutexUnlock(ctx->mutex);
 }
 
 void WS_Broadcast(WebSocketContext *ctx, uint8_t type, uint32_t frame_id, const void *data, size_t size) {
     if (!ctx) return;
+    
+    OS_MutexLock(ctx->mutex);
     
     // Construct WebSocket Frame
     // FIN=1, Opcode=2 (Binary)
@@ -266,6 +276,7 @@ void WS_Broadcast(WebSocketContext *ctx, uint8_t type, uint32_t frame_id, const 
             }
         }
     }
+    OS_MutexUnlock(ctx->mutex);
 }
 
 void WS_Shutdown(WebSocketContext *ctx) {
@@ -276,4 +287,5 @@ void WS_Shutdown(WebSocketContext *ctx) {
         }
     }
     if (ctx->server_fd >= 0) close(ctx->server_fd);
+    OS_MutexDestroy(ctx->mutex);
 }

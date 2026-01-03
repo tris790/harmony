@@ -1,8 +1,9 @@
 #ifndef HARMONY_OS_API_H
 #define HARMONY_OS_API_H
 
-#include "memory_arena.h"
-#include <stdbool.h>
+# include "memory_arena.h"
+# include <stdbool.h>
+# include <stdint.h>
 
 // Windowing
 typedef struct WindowContext WindowContext; // Opaque handle
@@ -62,5 +63,29 @@ const char *OS_GetClipboardText(MemoryArena *arena);
 void OS_SetClipboardText(const char *text);
 bool OS_IsPastePressed(void);
 bool OS_IsCtrlDown(void);
+
+// Threading & Synchronization
+typedef struct OS_Thread OS_Thread;
+typedef void (*OS_ThreadProc)(void *data);
+
+OS_Thread* OS_ThreadCreate(OS_ThreadProc proc, void *data);
+void OS_ThreadJoin(OS_Thread *thread);
+void OS_ThreadDetach(OS_Thread *thread);
+
+typedef struct OS_Mutex OS_Mutex;
+OS_Mutex* OS_MutexCreate(void);
+void OS_MutexLock(OS_Mutex *mutex);
+void OS_MutexUnlock(OS_Mutex *mutex);
+void OS_MutexDestroy(OS_Mutex *mutex);
+
+typedef struct OS_Semaphore OS_Semaphore;
+OS_Semaphore* OS_SemaphoreCreate(uint32_t initial_value);
+void OS_SemaphoreWait(OS_Semaphore *sem);
+void OS_SemaphorePost(OS_Semaphore *sem);
+void OS_SemaphoreDestroy(OS_Semaphore *sem);
+
+// Atomic increments/decrements (for simple counters)
+int32_t OS_AtomicIncrement(int32_t *val);
+int32_t OS_AtomicDecrement(int32_t *val);
 
 #endif // HARMONY_OS_API_H

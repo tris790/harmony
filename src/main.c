@@ -7,12 +7,14 @@
 #include "ui_api.h"
 #include "config_api.h"
 #include <stdio.h>
+#include <unistd.h>
 #include <netinet/in.h>
 #include "net/protocol.h" // For Packetizer
 #include <stdlib.h> // For getenv
 
 #include "net/websocket.h"
 #include "net/aes.h"
+#include "core/queue.h"
 
 // Forward Declaration (should be in a header)
 
@@ -22,17 +24,370 @@
 // Forward Declaration
 void Portal_RequestScreenCast(uint32_t *out_video_node, uint32_t *out_audio_node);
 
-// --- HOST MODE ---
+// --- THREADING CONTEXTS ---
+
+typedef struct EncoderThreadContext {
+    Queue *frame_queue; // Queue of VideoFrame* (must be copies)
+    VideoFormat vfmt;
+    MemoryArena *arena;
+    
+    // Communication with Network
+    NetworkContext *net;
+    char viewer_ip[16];
+    int viewer_port;
+    bool has_viewer;
+    OS_Mutex *viewer_mutex;
+    
+    // WebSocket
+    WebSocketContext *ws;
+    
+    // Encryption
+    AES_Ctx aes_ctx;
+    bool encryption_enabled;
+    
+    Packetizer packetizer;
+    
+    bool running;
+} EncoderThreadContext;
+
+typedef struct AudioThreadContext {
+    AudioCaptureContext *capture;
+    AudioEncoder *encoder;
+    
+    // Communication with Network
+    NetworkContext *net;
+    char viewer_ip[16];
+    int viewer_port;
+    bool has_viewer;
+    OS_Mutex *viewer_mutex;
+    
+    // WebSocket
+    WebSocketContext *ws;
+    
+    // Encryption
+    AES_Ctx aes_ctx;
+    bool encryption_enabled;
+    
+    Packetizer *packetizer; // Shared with Video for ID sequence? 
+    // Actually, Protocol_SendAudio uses the packetizer's frame_id_counter.
+    // If they share it, it must be protected.
+    OS_Mutex *packetizer_mutex;
+    
+    bool running;
+} AudioThreadContext;
+
+typedef struct NetReceiverContext {
+    NetworkContext *net;
+    Queue *video_queue;
+    Queue *audio_queue;
+    
+    // Shared State
+    StreamMetadata *stream_meta;
+    OS_Mutex *meta_mutex;
+    
+    size_t *bytes_received;
+    OS_Mutex *stats_mutex;
+    
+    bool running;
+} NetReceiverContext;
+
+typedef struct DecoderThreadContext {
+    Queue *video_queue;
+    DecoderContext *decoder;
+    VideoFrame *out_frame;
+    OS_Mutex *frame_mutex;
+    MemoryArena *arena;
+    
+    // Encryption
+    AES_Ctx aes_ctx;
+    bool encryption_enabled;
+    
+    bool running;
+} DecoderThreadContext;
+
+typedef struct AudioDecoderThreadContext {
+    Queue *audio_queue;
+    AudioDecoder *decoder;
+    AudioPlaybackContext *playback;
+    
+    // Encryption
+    AES_Ctx aes_ctx;
+    bool encryption_enabled;
+    
+    bool running;
+} AudioDecoderThreadContext;
+
+
+// --- HELPER TYPES ---
 typedef struct NetCallbackData {
     NetworkContext *net;
     const char *dest_ip;
     int dest_port;
 } NetCallbackData;
 
-void Net_SendPacketCallback(void *user_data, void *packet_data, size_t packet_size) {
+static void Net_SendPacketCallback(void *user_data, void *packet_data, size_t packet_size) {
     NetCallbackData *d = (NetCallbackData *)user_data;
     Net_Send(d->net, d->dest_ip, d->dest_port, packet_data, packet_size);
 }
+
+// --- THREAD PROCEDURES ---
+
+static void EncoderThreadProc(void *data) {
+    EncoderThreadContext *ctx = (EncoderThreadContext *)data;
+    printf("EncoderThread: Started\n");
+    
+    EncoderContext *encoder = Codec_InitEncoder(ctx->arena, ctx->vfmt);
+    if (!encoder) {
+        printf("EncoderThread: Failed to initialize encoder\n");
+        return;
+    }
+    
+    MemoryArena packet_arena;
+    ArenaInit(&packet_arena, 16 * 1024 * 1024);
+    
+    while (ctx->running) {
+        VideoFrame *frame = (VideoFrame *)Queue_Pop(ctx->frame_queue);
+        if (!frame) break; // Shutdown signal
+        
+        // Handle resolution change? 
+        // For now we assume vfmt is constant or thread manages it.
+        // Actually, if main thread changes vfmt, it should restart the thread.
+        // But let's check if dimensions match.
+        if (frame->width != ctx->vfmt.width || frame->height != ctx->vfmt.height) {
+             printf("EncoderThread: Resolution change detected in queue! Restarting encoder.\n");
+             Codec_CloseEncoder(encoder);
+             ctx->vfmt.width = frame->width;
+             ctx->vfmt.height = frame->height;
+             encoder = Codec_InitEncoder(ctx->arena, ctx->vfmt);
+        }
+
+        if (encoder) {
+            ArenaClear(&packet_arena);
+            EncodedPacket pkt = {0};
+            Codec_EncodeFrame(encoder, frame, &packet_arena, &pkt);
+            
+            if (pkt.size > 0) {
+                uint32_t current_frame_id = ctx->packetizer.frame_id_counter + 1;
+                
+                // Encrypt if enabled
+                if (ctx->encryption_enabled) {
+                    uint8_t iv[16] = {0};
+                    uint32_t net_id = htonl(current_frame_id);
+                    memcpy(iv, &net_id, 4);
+                    AES_CTR_Xcrypt(&ctx->aes_ctx, iv, pkt.data, pkt.size);
+                }
+                
+                // Send UDP if viewer exists
+                OS_MutexLock(ctx->viewer_mutex);
+                if (ctx->has_viewer) {
+                    NetCallbackData net_cb = { .net = ctx->net, .dest_ip = ctx->viewer_ip, .dest_port = ctx->viewer_port };
+                    Protocol_SendFrame(&ctx->packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
+                }
+                OS_MutexUnlock(ctx->viewer_mutex);
+                
+                // Broadcast WebSocket
+                WS_Broadcast(ctx->ws, PACKET_TYPE_VIDEO, current_frame_id, pkt.data, pkt.size);
+            }
+        }
+        
+        // Free frame data (it was copied)
+        if (frame->data[0]) free(frame->data[0]);
+        free(frame);
+    }
+    
+    if (encoder) Codec_CloseEncoder(encoder);
+    Queue_Destroy(ctx->frame_queue);
+    printf("EncoderThread: Finished\n");
+}
+
+static void AudioThreadProc(void *data) {
+    AudioThreadContext *ctx = (AudioThreadContext *)data;
+    printf("AudioThread: Started\n");
+    
+    while (ctx->running) {
+        // Poll multiple times to ensure we get all buffered audio
+        for (int poll = 0; poll < 5; poll++) {
+            Audio_PollCapture(ctx->capture);
+        }
+        
+        AudioFrame *aframe;
+        while ((aframe = Audio_GetCapturedFrame(ctx->capture)) != NULL) {
+            EncodedAudio encoded_audio = {0};
+            Audio_Encode(ctx->encoder, aframe, &encoded_audio);
+            
+            if (encoded_audio.size > 0) {
+                OS_MutexLock(ctx->packetizer_mutex);
+                uint32_t current_audio_id = ctx->packetizer->frame_id_counter + 1;
+                
+                // Encrypt audio if enabled
+                if (ctx->encryption_enabled) {
+                    uint8_t iv[16] = {0};
+                    uint32_t net_id = htonl(current_audio_id);
+                    memcpy(iv, &net_id, 4);
+                    AES_CTR_Xcrypt(&ctx->aes_ctx, iv, encoded_audio.data, encoded_audio.size);
+                }
+                
+                OS_MutexLock(ctx->viewer_mutex);
+                if (ctx->has_viewer) {
+                    NetCallbackData net_cb = { .net = ctx->net, .dest_ip = ctx->viewer_ip, .dest_port = ctx->viewer_port };
+                    Protocol_SendAudio(ctx->packetizer, encoded_audio.data, encoded_audio.size, Net_SendPacketCallback, &net_cb);
+                }
+                OS_MutexUnlock(ctx->viewer_mutex);
+                
+                WS_Broadcast(ctx->ws, PACKET_TYPE_AUDIO, current_audio_id, encoded_audio.data, encoded_audio.size);
+                OS_MutexUnlock(ctx->packetizer_mutex);
+            }
+        }
+        
+        usleep(5000); // 5ms sleep
+    }
+    
+    printf("AudioThread: Finished\n");
+}
+
+static void NetReceiverProc(void *data) {
+    NetReceiverContext *ctx = (NetReceiverContext *)data;
+    printf("NetReceiverThread: Started\n");
+    
+    uint8_t buf[2048];
+    char sender_ip[16];
+    int sender_port;
+    
+    MemoryArena reasm_arena;
+    ArenaInit(&reasm_arena, 8 * 1024 * 1024);
+    Reassembler video_reassembler;
+    Reassembler audio_reassembler;
+    Reassembler_Init(&video_reassembler, &reasm_arena);
+    Reassembler_Init(&audio_reassembler, &reasm_arena);
+
+    while (ctx->running) {
+        int n = Net_Recv(ctx->net, buf, sizeof(buf), sender_ip, &sender_port);
+        if (n > 0) {
+            OS_MutexLock(ctx->stats_mutex);
+            *(ctx->bytes_received) += n;
+            OS_MutexUnlock(ctx->stats_mutex);
+            
+            if (n < (int)sizeof(PacketHeader)) continue;
+            PacketHeader *peek_header = (PacketHeader *)buf;
+            uint8_t ptype = peek_header->packet_type;
+            
+            if (ptype == PACKET_TYPE_KEEPALIVE) continue;
+            
+            if (ptype == PACKET_TYPE_METADATA) {
+                uint8_t *payload = buf + sizeof(PacketHeader);
+                size_t payload_size = peek_header->payload_size;
+                if (payload_size >= sizeof(StreamMetadata) - sizeof(uint32_t) && payload_size <= sizeof(StreamMetadata)) {
+                    OS_MutexLock(ctx->meta_mutex);
+                    memset(ctx->stream_meta, 0, sizeof(StreamMetadata));
+                    memcpy(ctx->stream_meta, payload, payload_size);
+                    OS_MutexUnlock(ctx->meta_mutex);
+                }
+                continue;
+            }
+            
+            void *frame_data = NULL;
+            size_t frame_size = 0;
+            uint8_t packet_type = 0;
+            ReassemblyResult res;
+            
+            if (ptype == PACKET_TYPE_VIDEO) {
+                res = Protocol_HandlePacket(&video_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
+            } else if (ptype == PACKET_TYPE_AUDIO) {
+                res = Protocol_HandlePacket(&audio_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
+            } else {
+                continue;
+            }
+            
+            if (res == RESULT_COMPLETE) {
+                uint8_t *qdata = malloc(frame_size);
+                memcpy(qdata, frame_data, frame_size);
+                
+                EncodedPacket *pkt = malloc(sizeof(EncodedPacket));
+                pkt->data = qdata;
+                pkt->size = frame_size;
+                pkt->pts = (int64_t)peek_header->frame_id;
+                
+                if (packet_type == PACKET_TYPE_VIDEO) {
+                    Queue_Push(ctx->video_queue, pkt);
+                } else if (packet_type == PACKET_TYPE_AUDIO) {
+                    Queue_Push(ctx->audio_queue, pkt);
+                } else {
+                    free(qdata);
+                    free(pkt);
+                }
+            }
+        } else {
+            usleep(1000); // 1ms
+        }
+    }
+    printf("NetReceiverThread: Finished\n");
+}
+
+static void DecoderThreadProc(void *data) {
+    DecoderThreadContext *ctx = (DecoderThreadContext *)data;
+    printf("DecoderThread: Started\n");
+    
+    while (ctx->running) {
+        EncodedPacket *pkt = (EncodedPacket *)Queue_Pop(ctx->video_queue);
+        if (!pkt) break;
+        
+        if (ctx->encryption_enabled) {
+            uint8_t iv[16] = {0};
+            uint32_t net_id = htonl((uint32_t)pkt->pts);
+            memcpy(iv, &net_id, 4);
+            AES_CTR_Xcrypt(&ctx->aes_ctx, iv, pkt->data, pkt->size);
+            
+            uint8_t *d = pkt->data;
+            bool valid = false;
+            if (pkt->size >= 3) {
+                if (d[0] == 0 && d[1] == 0 && d[2] == 1) valid = true;
+                else if (pkt->size >= 4 && d[0] == 0 && d[1] == 0 && d[2] == 0 && d[3] == 1) valid = true;
+            }
+            if (!valid) {
+                 free(pkt->data);
+                 free(pkt);
+                 continue;
+            }
+        }
+        
+        OS_MutexLock(ctx->frame_mutex);
+        Codec_DecodePacket(ctx->decoder, pkt, ctx->out_frame);
+        OS_MutexUnlock(ctx->frame_mutex);
+        
+        free(pkt->data);
+        free(pkt);
+    }
+    printf("DecoderThread: Finished\n");
+}
+
+static void AudioDecoderThreadProc(void *data) {
+    AudioDecoderThreadContext *ctx = (AudioDecoderThreadContext *)data;
+    printf("AudioDecoderThread: Started\n");
+    
+    while (ctx->running) {
+        EncodedPacket *pkt = (EncodedPacket *)Queue_Pop(ctx->audio_queue);
+        if (!pkt) break;
+        
+        if (ctx->encryption_enabled) {
+            uint8_t iv[16] = {0};
+            uint32_t net_id = htonl((uint32_t)pkt->pts);
+            memcpy(iv, &net_id, 4);
+            AES_CTR_Xcrypt(&ctx->aes_ctx, iv, pkt->data, pkt->size);
+        }
+        
+        AudioFrame aframe = {0};
+        Audio_Decode(ctx->decoder, pkt->data, pkt->size, &aframe);
+        if (aframe.sample_count > 0) {
+            Audio_WritePlayback(ctx->playback, &aframe);
+        }
+        
+        free(pkt->data);
+        free(pkt);
+    }
+    printf("AudioDecoderThread: Finished\n");
+}
+
+// --- HOST MODE ---
 
 // Calculate target bitrate based on resolution and framerate.
 // Uses industry-standard recommendations (YouTube/Twitch/OBS 2024):
@@ -112,16 +467,11 @@ static void UI_DrawMetadataTooltip(WindowContext *window, const StreamMetadata *
 
 int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id, const char *encoder_preset, const char *password, const PersistentConfig *config) {
     (void)verbose;
-    printf("Starting HOST Mode...\n");
+    printf("Starting Multi-Threaded HOST Mode...\n");
     
-    MemoryArena packet_arena;
-    ArenaInit(&packet_arena, 32 * 1024 * 1024);
-
     // Request Screen Share Permissions
     printf("Requesting Screen Share... Please acknowledge dialog.\n");
     uint32_t video_node_id = 0;
-    // We ignore the portal audio node now, because we use our own selection.
-    // But we still need to pass a pointer to match signature.
     uint32_t portal_audio_node = 0; 
     Portal_RequestScreenCast(&video_node_id, &portal_audio_node);
     
@@ -129,119 +479,105 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
         printf("FAILURE! Could not get screen stream. Exiting.\n");
         return 1;
     }
-    printf("SUCCESS! Got Video Node ID: %u, Audio Node ID: %u\n", video_node_id, audio_node_id);
+    printf("Got Video Node ID: %u, Audio Node ID: %u\n", video_node_id, audio_node_id);
     
     CaptureContext *capture = Capture_Init(arena, video_node_id);
     if (!capture) return 1;
 
-    // Audio capture and encoding
-    // If use_portal_audio is true (which we repurpose as "Specific Node Selected" logic implicitly by ID > 0),
-    // or we just pass the ID. If 0, PipeWire captures default monitor.
-    // However, our new UI sets explicit ID.
-    // If ID == 0 (Default), it captures default input/monitor used by PW.
-    // Let's rely on that.
-    
     AudioCaptureContext *audio_capture = Audio_InitCapture(arena, audio_node_id);
     AudioEncoder *audio_encoder = Audio_InitEncoder(arena);
-    if (!audio_capture || !audio_encoder) {
-        printf("Host: Audio initialization failed (continuing without audio)\n");
-    }
 
-    // Use dynamic bitrate calculation
+    // Main thread Network Setup (shared by worker threads)
+    NetworkContext *net = Net_Init(arena, 9999, true);
+    if (!net) return 1;
+    
+    WebSocketContext *ws = WS_Init(arena, 8080);
+    
+    // Video Format Setup
     int target_fps = (config && config->fps > 0) ? config->fps : 60;
     int initial_bitrate = CalculateTargetBitrate(1280, 720, target_fps);
     VideoFormat vfmt = { .width = 1280, .height = 720, .fps = target_fps, .bitrate = initial_bitrate };
     strncpy(vfmt.preset, encoder_preset, sizeof(vfmt.preset) - 1);
-    vfmt.preset[sizeof(vfmt.preset) - 1] = '\0';
-    EncoderContext *encoder = Codec_InitEncoder(arena, vfmt);
-    if (!encoder) return 1;
-
-    // Network Setup - Single socket on port 9999 for both sending and receiving
-    // This enables symmetric UDP hole punching through firewalls
-    NetworkContext *net = Net_Init(arena, 9999, true);
-    if (!net) {
-        printf("Host: Failed to bind port 9999.\n");
-        return 1;
-    }
-    
-    // Initialise WebSocket Server on port 8080
-    WebSocketContext *ws = WS_Init(arena, 8080);
-    if (ws) {
-        printf("Host: WebSocket Server listening on port 8080\n");
-    } else {
-        printf("Host: Failed to start WebSocket Server on 8080\n");
-    }
 
     // Encryption Setup
-    AES_Ctx aes_ctx;
     bool encryption_enabled = (password && password[0] != '\0');
+    uint8_t master_key[16] = {0};
     if (encryption_enabled) {
-        uint8_t key[16];
-        AES_DeriveKey(password, key);
-        AES_Init(&aes_ctx, key);
-        printf("Host: Stream encryption enabled.\n");
+        AES_DeriveKey(password, master_key);
     }
-    
-    // Viewer address tracking - will be updated when we receive punch packets
-    char viewer_ip[16] = {0};
-    bool has_viewer = false;
-    
-    // Send to target_ip:9999 (updated when we receive punch from viewer)
-    NetCallbackData net_cb = { .net = net, .dest_ip = target_ip, .dest_port = 9999 };
-    Packetizer packetizer = {0};
 
-    // Stream Metadata
+    // Threading Synchronization
+    OS_Mutex *viewer_mutex = OS_MutexCreate();
+    OS_Mutex *packetizer_mutex = OS_MutexCreate();
+
+    // Start Encoder Thread
+    EncoderThreadContext encoder_ctx = {0};
+    encoder_ctx.frame_queue = Queue_Create();
+    encoder_ctx.vfmt = vfmt;
+    encoder_ctx.arena = ArenaPush(arena, 32 * 1024 * 1024);
+    encoder_ctx.net = net;
+    strncpy(encoder_ctx.viewer_ip, target_ip, 15);
+    encoder_ctx.viewer_port = 9999;
+    encoder_ctx.has_viewer = false;
+    encoder_ctx.viewer_mutex = viewer_mutex;
+    encoder_ctx.ws = ws;
+    encoder_ctx.encryption_enabled = encryption_enabled;
+    if (encryption_enabled) AES_Init(&encoder_ctx.aes_ctx, master_key);
+    encoder_ctx.running = true;
+    OS_Thread *encoder_thread = OS_ThreadCreate(EncoderThreadProc, &encoder_ctx);
+
+    // Start Audio Thread
+    AudioThreadContext audio_ctx = {0};
+    audio_ctx.capture = audio_capture;
+    audio_ctx.encoder = audio_encoder;
+    audio_ctx.net = net;
+    strncpy(audio_ctx.viewer_ip, target_ip, 15);
+    audio_ctx.viewer_port = 9999;
+    audio_ctx.has_viewer = false;
+    audio_ctx.viewer_mutex = viewer_mutex;
+    audio_ctx.ws = ws;
+    audio_ctx.encryption_enabled = encryption_enabled;
+    if (encryption_enabled) AES_Init(&audio_ctx.aes_ctx, master_key);
+    audio_ctx.packetizer = &encoder_ctx.packetizer; // Interleave IDs
+    audio_ctx.packetizer_mutex = packetizer_mutex;
+    audio_ctx.running = true;
+    OS_Thread *audio_thread = OS_ThreadCreate(AudioThreadProc, &audio_ctx);
+
+    // Metadata & Packetizer for Main Thread (Metadata/Punches)
     StreamMetadata metadata = {0};
     strcpy(metadata.os_name, "Linux");
     const char *env_de = getenv("XDG_CURRENT_DESKTOP");
     strcpy(metadata.de_name, env_de ? env_de : "Unknown");
-    // Width/Height set in loop
     strcpy(metadata.format_name, "BGRx");
-    strcpy(metadata.color_space, "sRGB");
     metadata.fps = vfmt.fps;
 
     int frame_count = 0;
-    int frames_encoded = 0;
     float elapsed_time = 0.0f;
-    bool has_started_capturing = false; // Persistent flag - once true, stays true
-    
-    // Keepalive tracking
-    float time_since_last_send = 0.0f;
-    const float KEEPALIVE_INTERVAL = 0.5f; // Send keepalive every 500ms if no frames
-    
-    // Host punch - send punch to viewer to open our firewall for their punch  
     float time_since_host_punch = 0.0f;
     const float HOST_PUNCH_INTERVAL = 0.5f;
-    
+
     int result = 0;
     while (OS_ProcessEvents(window)) {
-        if (OS_IsF11Pressed()) { static bool fs = false; fs = !fs; OS_SetFullscreen(window, fs); }
-        // Check for ESC to return to menu
-        if (OS_IsEscapePressed()) {
-            printf("Host: ESC pressed, returning to menu.\n");
-            result = 2;
-            break;
-        }
+        if (OS_IsEscapePressed()) { result = 2; break; }
         
-        // Poll WebSocket
         WS_Poll(ws);
         
-        // Get window size for UI
-        int w = 1280, h = 720;
+        int w, h;
         OS_GetWindowSize(window, &w, &h);
         Render_SetScreenSize(w, h);
         
-        // Update elapsed time for animations
         elapsed_time += 1.0f / (float)vfmt.fps;
-        
-        // Send punch to viewer to open our firewall for their punch (same socket)
         time_since_host_punch += 1.0f / (float)vfmt.fps;
+
+        // Periodic Punches (Main Thread)
         if (time_since_host_punch >= HOST_PUNCH_INTERVAL) {
-            Protocol_SendPunch(&packetizer, Net_SendPacketCallback, &net_cb);
+            OS_MutexLock(packetizer_mutex);
+            Protocol_SendPunch(&encoder_ctx.packetizer, Net_SendPacketCallback, &(NetCallbackData){net, target_ip, 9999});
+            OS_MutexUnlock(packetizer_mutex);
             time_since_host_punch = 0.0f;
         }
-        
-        // Check for punch packets from viewers (receive on same socket)
+
+        // Receive Punch / Update Viewer (Main Thread)
         {
             uint8_t punch_buf[64];
             char incoming_ip[16];
@@ -251,172 +587,67 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                 if (n >= (int)sizeof(PacketHeader)) {
                     PacketHeader *hdr = (PacketHeader *)punch_buf;
                     if (hdr->packet_type == PACKET_TYPE_PUNCH) {
-                        // Viewer is sending punch packets - update our target to their source address
-                        if (!has_viewer || strcmp(viewer_ip, incoming_ip) != 0) {
-                            bool is_new_viewer = !has_viewer;
-                            strncpy(viewer_ip, incoming_ip, sizeof(viewer_ip) - 1);
-                            has_viewer = true;
-                            net_cb.dest_ip = viewer_ip;
-                            printf("Host: Viewer connected from %s:%d - starting stream\n", incoming_ip, incoming_port);
-                            
-                            // Force keyframe for new viewer by re-initializing encoder
-                            // This ensures the first frame they receive has SPS/PPS
-                            if (is_new_viewer && encoder) {
-                                printf("Host: Re-initializing encoder to send fresh keyframe\n");
-                                Codec_CloseEncoder(encoder);
-                                encoder = Codec_InitEncoder(arena, vfmt);
-                            }
+                        OS_MutexLock(viewer_mutex);
+                        if (!encoder_ctx.has_viewer || strcmp(encoder_ctx.viewer_ip, incoming_ip) != 0) {
+                            strncpy(encoder_ctx.viewer_ip, incoming_ip, 15);
+                            strncpy(audio_ctx.viewer_ip, incoming_ip, 15);
+                            encoder_ctx.has_viewer = true;
+                            audio_ctx.has_viewer = true;
+                            printf("Host: Viewer connected from %s:%d\n", incoming_ip, incoming_port);
                         }
+                        OS_MutexUnlock(viewer_mutex);
                     }
                 }
             }
         }
-        
-        // Only send data when we have a confirmed viewer (after UDP punch)
-        // OR if we have WebSocket clients connected (we can't easily check count here without exposing implementation,
-        // but it's safe to capture and encode if we wanted to support WS-only mode.
-        // For now, let's keep the "Wait for viewer" logic for UDP, but maybe relax it if WS is active?
-        // Actually, WS broadcast just sends if clients exist.
-        // HACK: Allow capture if we have WS, but we don't know if we have WS clients here easily.
-        // Let's just proceed to capture loop. If no viewer and no WS clients, it's wasted CPU, but that's fine.
-        // Actually, the original code skipped capture if !has_viewer. We should change that to allow ALWAYS capturing 
-        // if we are hosting, so WS works even without a UDP viewer.
-        
-        // Determine if we should be active (UDP Viewer OR WebSocket active - simplifying to ALWAYS active in Host mode for now)
-        // Or better: Just check `has_viewer` for UDP-specific branch, but allow generic capture.
-        bool active = has_viewer || (ws != NULL); 
 
-        if (!active) {
-            // Still waiting for viewer - just poll capture to keep it active
-            Capture_Poll(capture);
-            Capture_GetFrame(capture); // Discard frames while waiting
-            
-            // Draw waiting UI
-            Render_Clear(0.1f, 0.1f, 0.15f, 1.0f);
-            char wait_msg[128];
-            snprintf(wait_msg, sizeof(wait_msg), "Waiting for viewer at %s:9999 (or WS:8080)...", target_ip);
-            float tw = Render_GetTextWidth(wait_msg, 2.0f);
-            Render_DrawText(wait_msg, (w - tw) / 2.0f, h/2.0f, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
-            OS_SwapBuffers(window);
-            continue;
-        }
-        
-        // Send Metadata periodically (every ~1 sec)
-        if (frame_count % vfmt.fps == 0) {
-             Protocol_SendMetadata(&packetizer, &metadata, Net_SendPacketCallback, &net_cb);
-        }
-
+        // Capture Loop
         Capture_Poll(capture);
-        
-        // Poll and send ALL available audio frames
-        // Audio runs at 48kHz with 20ms (960 sample) frames = 50 frames/sec
-        // We may have multiple buffered, send them all
-        if (audio_capture && audio_encoder) {
-            // Poll multiple times to ensure we get all buffered audio
-            for (int poll = 0; poll < 5; poll++) {
-                Audio_PollCapture(audio_capture);
-            }
-            
-            // Send all available audio frames
-            AudioFrame *aframe;
-            while ((aframe = Audio_GetCapturedFrame(audio_capture)) != NULL) {
-                EncodedAudio encoded_audio = {0};
-                Audio_Encode(audio_encoder, aframe, &encoded_audio);
-                if (encoded_audio.size > 0) {
-                    uint32_t current_audio_id = packetizer.frame_id_counter + 1;
-
-                    // Encrypt audio if enabled
-                    if (encryption_enabled) {
-                        uint8_t iv[16] = {0};
-                        uint32_t net_id = htonl(current_audio_id);
-                        memcpy(iv, &net_id, 4);
-                        AES_CTR_Xcrypt(&aes_ctx, iv, encoded_audio.data, encoded_audio.size);
-                    }
-
-                    Protocol_SendAudio(&packetizer, encoded_audio.data, encoded_audio.size, Net_SendPacketCallback, &net_cb);
-                    WS_Broadcast(ws, PACKET_TYPE_AUDIO, current_audio_id, encoded_audio.data, encoded_audio.size);
-                }
-            }
-        }
-        
         VideoFrame *frame = Capture_GetFrame(capture);
         if (frame) {
-            has_started_capturing = true; // Once we get a frame, we're capturing
+            frame_count++;
             
-            // Check for resolution change
-            // Ensure dimensions are even for H.264
-            int safe_width = frame->width & ~1;
-            int safe_height = frame->height & ~1;
-
-            if (safe_width != vfmt.width || safe_height != vfmt.height || !encoder) {
-                printf("Host: Resolution changed to %dx%d (Safe: %dx%d). Re-initializing Encoder.\n", 
-                    frame->width, frame->height, safe_width, safe_height);
-                
-                if (encoder) Codec_CloseEncoder(encoder);
-                
-                vfmt.width = safe_width;
-                vfmt.height = safe_height;
-                vfmt.bitrate = CalculateTargetBitrate(safe_width, safe_height, vfmt.fps);
-                encoder = Codec_InitEncoder(arena, vfmt);
-                
-                if (encoder) {
-                    // Update Metadata immediately
-                    metadata.screen_width = safe_width;
-                    metadata.screen_height = safe_height;
-                    Protocol_SendMetadata(&packetizer, &metadata, Net_SendPacketCallback, &net_cb);
-                } else {
-                    printf("Host: Failed to re-init encoder!\n");
+            // Send Metadata periodically
+            if (frame_count % vfmt.fps == 0) {
+                metadata.screen_width = frame->width;
+                metadata.screen_height = frame->height;
+                OS_MutexLock(packetizer_mutex);
+                OS_MutexLock(viewer_mutex);
+                if (encoder_ctx.has_viewer) {
+                    NetCallbackData net_cb = { .net = net, .dest_ip = encoder_ctx.viewer_ip, .dest_port = 9999 };
+                    Protocol_SendMetadata(&encoder_ctx.packetizer, &metadata, Net_SendPacketCallback, &net_cb);
                 }
+                OS_MutexUnlock(viewer_mutex);
+                OS_MutexUnlock(packetizer_mutex);
             }
 
-            // Periodically update metadata (store current dimensions)
-            metadata.screen_width = vfmt.width;
-            metadata.screen_height = vfmt.height;
-
-            if (encoder) {
-                ArenaClear(&packet_arena);
-                EncodedPacket pkt = {0};
-                Codec_EncodeFrame(encoder, frame, &packet_arena, &pkt);
-            
-                if (pkt.size > 0) {
-                    uint32_t current_frame_id = packetizer.frame_id_counter + 1; // Anticipate next ID
-
-                    // Encrypt if pathward is set
-                    if (encryption_enabled) {
-                        uint8_t iv[16] = {0};
-                        uint32_t net_id = htonl(current_frame_id);
-                        memcpy(iv, &net_id, 4); // Use frame_id as IV start
-                        AES_CTR_Xcrypt(&aes_ctx, iv, pkt.data, pkt.size);
-                    }
-
-                    // 1. Send via UDP (Original)
-                    if (has_viewer) {
-                        Protocol_SendFrame(&packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
-                    }
-                    
-                    // 2. Send via WebSocket (New)
-                }
-            }
-        } else {
-            // No frame captured - track time for keepalive
-            time_since_last_send += 1.0f / (float)vfmt.fps;
-            
-            // Send keepalive if we've been idle for too long
-            if (has_started_capturing && time_since_last_send > KEEPALIVE_INTERVAL) {
-                Protocol_SendKeepalive(&packetizer, Net_SendPacketCallback, &net_cb);
-                time_since_last_send = 0.0f;
-            }
+            // Copy frame and push to worker queue
+            VideoFrame *qframe = malloc(sizeof(VideoFrame));
+            *qframe = *frame;
+            size_t data_size = frame->height * frame->linesize[0];
+            qframe->data[0] = malloc(data_size);
+            memcpy(qframe->data[0], frame->data[0], data_size);
+            Queue_Push(encoder_ctx.frame_queue, qframe);
         }
-        
-        // Draw streaming status UI (prevents flickering, provides feedback)
-        UI_DrawStreamStatus(w, h, elapsed_time, frames_encoded, 
-                           target_ip, vfmt.width, vfmt.height, has_started_capturing);
+
+        // Status UI
+        UI_DrawStreamStatus(w, h, elapsed_time, frame_count, target_ip, 
+                           metadata.screen_width, metadata.screen_height, frame_count > 0);
         
         OS_SwapBuffers(window);
     }
 
+    // Stop Worker Threads
+    encoder_ctx.running = false;
+    audio_ctx.running = false;
+    Queue_Push(encoder_ctx.frame_queue, NULL); // Unblock encoder thread
+    
+    OS_ThreadJoin(encoder_thread);
+    OS_ThreadJoin(audio_thread);
+
     // Cleanup
-    if (encoder) Codec_CloseEncoder(encoder);
+    OS_MutexDestroy(viewer_mutex);
+    OS_MutexDestroy(packetizer_mutex);
     if (audio_capture) Audio_CloseCapture(audio_capture);
     if (audio_encoder) Audio_CloseEncoder(audio_encoder);
     if (capture) Capture_Close(capture);
@@ -429,267 +660,134 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
 // --- VIEWER MODE ---
 int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bool verbose, const char *password) {
     (void)verbose;
-    printf("Starting VIEWER Mode...\n");
-    printf("Viewer: Will send punch packets to host at %s:9999\n", host_ip);
+    printf("Starting Multi-Threaded VIEWER Mode...\n");
     
-    // Single socket on Port 9999 for both receiving data and sending punch
-    // This enables symmetric UDP hole punching through firewalls
     NetworkContext *net = Net_Init(arena, 9999, true);
-    if (!net) {
-        printf("Failed to bind port 9999.\n");
-        return 1;
-    }
+    if (!net) return 1;
     
-    // Punch setup - use same socket, send to host port 9999
     Packetizer punch_packetizer = {0};
     NetCallbackData punch_cb = { .net = net, .dest_ip = host_ip, .dest_port = 9999 };
     
     DecoderContext *decoder = Codec_InitDecoder(arena);
-    if (!decoder) return 1;
-    
-    // Audio decoding and playback
     AudioDecoder *audio_decoder = Audio_InitDecoder(arena);
     AudioPlaybackContext *audio_playback = Audio_InitPlayback(arena);
-    if (!audio_decoder || !audio_playback) {
-        printf("Viewer: Audio initialization failed (continuing without audio)\n");
-    }
     
-    // Separate reassemblers for video and audio (they use different frame_id sequences)
-    Reassembler video_reassembler;
-    Reassembler audio_reassembler;
-    Reassembler_Init(&video_reassembler, arena);
-    Reassembler_Init(&audio_reassembler, arena);
-    
-    // Encryption Setup
-    AES_Ctx aes_ctx;
     bool encryption_enabled = (password && password[0] != '\0');
+    uint8_t master_key[16] = {0};
     if (encryption_enabled) {
-        uint8_t key[16];
-        AES_DeriveKey(password, key);
-        AES_Init(&aes_ctx, key);
-        printf("Viewer: Decryption enabled.\n");
+        AES_DeriveKey(password, master_key);
     }
     
-    // Video Frame for Decoding
+    // Shared State
     VideoFrame decoded_frame = {0}; 
     StreamMetadata stream_meta = {0};
-    
-    int frames_decoded = 0;
-    float time_since_last_frame = 0.0f;
-    const float STREAM_TIMEOUT = 2.0f; // Reset after 2 seconds of no frames
-    
-    // Punch packet timing
-    float time_since_last_punch = 0.0f;
-    const float PUNCH_INTERVAL = 0.5f; // Send punch every 500ms
-    
-    // Bandwidth measurement
     size_t bytes_received_window = 0;
-    float bandwidth_window_time = 0.0f;
-    const float BANDWIDTH_WINDOW = 1.0f; // Measure over 1 second
     float current_mbps = 0.0f;
+    
+    // Threading Synchronization
+    Queue *video_queue = Queue_Create();
+    Queue *audio_queue = Queue_Create();
+    OS_Mutex *meta_mutex = OS_MutexCreate();
+    OS_Mutex *stats_mutex = OS_MutexCreate();
+    OS_Mutex *frame_mutex = OS_MutexCreate();
+
+    // Worker Threads
+    NetReceiverContext net_ctx = {0};
+    net_ctx.net = net;
+    net_ctx.video_queue = video_queue;
+    net_ctx.audio_queue = audio_queue;
+    net_ctx.stream_meta = &stream_meta;
+    net_ctx.meta_mutex = meta_mutex;
+    net_ctx.bytes_received = &bytes_received_window;
+    net_ctx.stats_mutex = stats_mutex;
+    net_ctx.running = true;
+    OS_Thread *net_thread = OS_ThreadCreate(NetReceiverProc, &net_ctx);
+
+    DecoderThreadContext decoder_ctx = {0};
+    decoder_ctx.video_queue = video_queue;
+    decoder_ctx.decoder = decoder;
+    decoder_ctx.out_frame = &decoded_frame;
+    decoder_ctx.frame_mutex = frame_mutex;
+    decoder_ctx.arena = ArenaPush(arena, 32 * 1024 * 1024);
+    decoder_ctx.encryption_enabled = encryption_enabled;
+    if (encryption_enabled) AES_Init(&decoder_ctx.aes_ctx, master_key);
+    decoder_ctx.running = true;
+    OS_Thread *decoder_thread = OS_ThreadCreate(DecoderThreadProc, &decoder_ctx);
+
+    AudioDecoderThreadContext audio_decoder_ctx = {0};
+    audio_decoder_ctx.audio_queue = audio_queue;
+    audio_decoder_ctx.decoder = audio_decoder;
+    audio_decoder_ctx.playback = audio_playback;
+    audio_decoder_ctx.encryption_enabled = encryption_enabled;
+    if (encryption_enabled) AES_Init(&audio_decoder_ctx.aes_ctx, master_key);
+    audio_decoder_ctx.running = true;
+    OS_Thread *audio_decoder_thread = OS_ThreadCreate(AudioDecoderThreadProc, &audio_decoder_ctx);
+    
+    float time_since_last_punch = 0.0f;
+    const float PUNCH_INTERVAL = 0.5f;
+    float bandwidth_window_time = 0.0f;
+    const float BANDWIDTH_WINDOW = 1.0f;
     
     int result = 0;
     while (OS_ProcessEvents(window)) {
-        double now = OS_GetTime();
-        if (OS_IsF11Pressed()) { static bool fs = false; fs = !fs; OS_SetFullscreen(window, fs); }
-        // Check for ESC to return to menu
-        if (OS_IsEscapePressed()) {
-            printf("Viewer: ESC pressed, returning to menu.\n");
-            result = 2;
-            break;
-        }
+        if (OS_IsEscapePressed()) { result = 2; break; }
         
-        // Send punch packet periodically (UDP hole punching)
-        time_since_last_punch += 1.0f / 60.0f; // Assumed 60fps loop for UI
+        // Punch Loop (Main Thread)
+        time_since_last_punch += 1.0f / 60.0f;
         if (time_since_last_punch >= PUNCH_INTERVAL) {
             Protocol_SendPunch(&punch_packetizer, Net_SendPacketCallback, &punch_cb);
             time_since_last_punch = 0.0f;
         }
         
-        // Track frame timing
-        bool received_any_packet = false;  // For keepalive handling
-        
-        // 1. Receive Packets
-        uint8_t buf[2048]; 
-        char sender_ip[16];
-        int sender_port;
-        
-        int n;
-        while ((n = Net_Recv(net, buf, sizeof(buf), sender_ip, &sender_port)) > 0) {
-            bytes_received_window += n; // Track bandwidth
-            
-            // Peek at packet type from header
-            if (n < (int)sizeof(PacketHeader)) continue;
-            PacketHeader *peek_header = (PacketHeader *)buf;
-            uint8_t ptype = peek_header->packet_type;
-            
-            // Handle single-packet types directly (don't interfere with reassembler)
-            if (ptype == PACKET_TYPE_KEEPALIVE) {
-                received_any_packet = true;
-                continue;
-            }
-            
-            if (ptype == PACKET_TYPE_METADATA) {
-                // Metadata is single-packet, extract directly
-                uint8_t *payload = buf + sizeof(PacketHeader);
-                size_t payload_size = peek_header->payload_size;
-                // Use >= to handle version differences (older hosts may send smaller structs)
-                if (payload_size >= sizeof(StreamMetadata) - sizeof(uint32_t) && payload_size <= sizeof(StreamMetadata)) {
-                    memset(&stream_meta, 0, sizeof(StreamMetadata));
-                    memcpy(&stream_meta, payload, payload_size);
-                }
-                received_any_packet = true;
-                continue;
-            }
-            
-            // For multi-packet types (video, audio), use reassemblers
-            void *frame_data = NULL;
-            size_t frame_size = 0;
-            uint8_t packet_type = 0;
-            ReassemblyResult res;
-            
-            if (ptype == PACKET_TYPE_VIDEO) {
-                // Check if we are about to overwrite an incomplete frame
-                PacketHeader *hdr = (PacketHeader *)buf;
-                if (hdr->frame_id > video_reassembler.active_buffer.frame_id) {
-                    if (video_reassembler.active_buffer.frame_id > 0 && 
-                        video_reassembler.active_buffer.received_bytes < video_reassembler.active_buffer.total_size) {
-                        static double last_drop_log = 0;
-                        double now = OS_GetTime();
-                        if (now - last_drop_log >= 5.0) { 
-                            printf("Viewer: DROPPED FRAME %u! Received %zu/%zu bytes. (Next: %u)\n", 
-                                video_reassembler.active_buffer.frame_id,
-                                video_reassembler.active_buffer.received_bytes,
-                                video_reassembler.active_buffer.total_size,
-                                hdr->frame_id);
-                            last_drop_log = now;
-                        }
-                    }
-                }
-                res = Protocol_HandlePacket(&video_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
-            } else if (ptype == PACKET_TYPE_AUDIO) {
-                res = Protocol_HandlePacket(&audio_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
-            } else {
-                continue; // Unknown type
-            }
-            
-            if (res == RESULT_COMPLETE) {
-
-                if (packet_type == PACKET_TYPE_AUDIO) {
-                    // Decrypt if needed
-                    if (encryption_enabled) {
-                        uint8_t iv[16] = {0};
-                        uint32_t net_id = htonl(audio_reassembler.active_buffer.frame_id);
-                        memcpy(iv, &net_id, 4);
-                        AES_CTR_Xcrypt(&aes_ctx, iv, (uint8_t*)frame_data, frame_size);
-                    }
-
-                    // Decode and play audio
-                    if (audio_decoder && audio_playback) {
-                        AudioFrame audio_frame = {0};
-                        Audio_Decode(audio_decoder, frame_data, frame_size, &audio_frame);
-                        if (audio_frame.sample_count > 0) {
-                            Audio_WritePlayback(audio_playback, &audio_frame);
-                        }
-                    }
-                    received_any_packet = true;
-                } else if (packet_type == PACKET_TYPE_VIDEO) {
-                    // Decrypt if needed
-                    if (encryption_enabled) {
-                        uint8_t iv[16] = {0};
-                        uint32_t net_id = htonl(video_reassembler.active_buffer.frame_id);
-                        memcpy(iv, &net_id, 4);
-                        AES_CTR_Xcrypt(&aes_ctx, iv, (uint8_t*)frame_data, frame_size);
-
-                        // Simple validation: check for H.264 start code (0x000001 or 0x00000001)
-                        uint8_t *d = (uint8_t*)frame_data;
-                        bool valid = false;
-                        if (frame_size >= 3) {
-                            if (d[0] == 0 && d[1] == 0 && d[2] == 1) {
-                                valid = true;
-                            } else if (frame_size >= 4 && d[0] == 0 && d[1] == 0 && d[2] == 0 && d[3] == 1) {
-                                valid = true;
-                            }
-                        }
-
-                        if (!valid) {
-                            static double last_warn_time = 0;
-                            if (now - last_warn_time > 2.0) {
-                                printf("Viewer: Decryption failed (invalid start code). Wrong password?\n");
-                                last_warn_time = now;
-                            }
-                            received_any_packet = true;
-                            continue; // Skip decoding
-                        }
-                    }
-
-                    // Decode video
-                    EncodedPacket pkt = { .data = frame_data, .size = frame_size };
-                    Codec_DecodePacket(decoder, &pkt, &decoded_frame);
-
-                     if (decoded_frame.width > 0) {
-                         // Frame decoded
-                     }
-                     received_any_packet = true;
-                }
-            }
-        }
-        
-        // Poll audio playback to push buffered audio to output
-        if (audio_playback) {
-            Audio_PollPlayback(audio_playback);
-        }
-        
-        // Update bandwidth measurement
-        bandwidth_window_time += 1.0f / 60.0f; // Assumed 60fps loop for UI
+        // Bandwidth Measurement (Main Thread)
+        bandwidth_window_time += 1.0f / 60.0f;
         if (bandwidth_window_time >= BANDWIDTH_WINDOW) {
+            OS_MutexLock(stats_mutex);
             current_mbps = (bytes_received_window * 8.0f) / (bandwidth_window_time * 1000000.0f);
             bytes_received_window = 0;
+            OS_MutexUnlock(stats_mutex);
             bandwidth_window_time = 0.0f;
         }
-        
-        // Update timeout tracking - reset on ANY packet (including keepalive)
-        if (received_any_packet) {
-            time_since_last_frame = 0.0f;
-        } else {
-            time_since_last_frame += 1.0f / 60.0f; // Approximate frame time (UI loop)
-        }
-        
-        // Reset to waiting state if stream timed out
-        if (time_since_last_frame > STREAM_TIMEOUT && decoded_frame.width > 0) {
-            printf("Viewer: Stream timeout, waiting for reconnection...\n");
-            decoded_frame.width = 0;
-            decoded_frame.height = 0;
-            stream_meta.screen_width = 0; // Clear metadata too
-            
-            // Reset reassemblers so they can accept new stream (which starts at frame_id 1)
-            video_reassembler.active_buffer.frame_id = 0;
-            audio_reassembler.active_buffer.frame_id = 0;
-        }
-        
-        // Always draw the latest frame (or waiting screen)
-        int win_w = 1280, win_h = 720;
-        OS_GetWindowSize(window, &win_w, &win_h);
-        Render_SetScreenSize(win_w, win_h); // Update UI projection
 
+        // Rendering Loop
+        int win_w, win_h;
+        OS_GetWindowSize(window, &win_w, &win_h);
+        Render_SetScreenSize(win_w, win_h);
+
+        OS_MutexLock(frame_mutex);
         if (decoded_frame.width > 0 && decoded_frame.height > 0) {
             Render_DrawFrame(&decoded_frame, win_w, win_h);
+            OS_MutexUnlock(frame_mutex);
 
-            // Metadata Tooltip
-            UI_DrawMetadataTooltip(window, &stream_meta, current_mbps, frames_decoded);
+            OS_MutexLock(meta_mutex);
+            UI_DrawMetadataTooltip(window, &stream_meta, current_mbps, 0); // frame count tracking?
+            OS_MutexUnlock(meta_mutex);
         } else {
+             OS_MutexUnlock(frame_mutex);
              Render_Clear(0.1f, 0.1f, 0.1f, 1.0f);
-             const char *wait_msg = "Waiting for stream...";
+             const char *wait_msg = "Waiting for stream (Multi-Threaded)...";
              float tw = Render_GetTextWidth(wait_msg, 2.0f);
              Render_DrawText(wait_msg, (win_w - tw) / 2.0f, win_h / 2.0f, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
         }
         
-        // Don't clear if we drew frame? Or always clear background?
-        // If we draw frame, it covers screen.
         OS_SwapBuffers(window);
     }
 
+    // Stop Worker Threads
+    net_ctx.running = false;
+    decoder_ctx.running = false;
+    audio_decoder_ctx.running = false;
+    Queue_Push(video_queue, NULL);
+    Queue_Push(audio_queue, NULL);
+    
+    OS_ThreadJoin(net_thread);
+    OS_ThreadJoin(decoder_thread);
+    OS_ThreadJoin(audio_decoder_thread);
+
     // Cleanup
+    OS_MutexDestroy(meta_mutex);
+    OS_MutexDestroy(stats_mutex);
+    OS_MutexDestroy(frame_mutex);
     if (decoder) Codec_CloseDecoder(decoder);
     if (audio_decoder) Audio_CloseDecoder(audio_decoder);
     if (audio_playback) Audio_ClosePlayback(audio_playback);
