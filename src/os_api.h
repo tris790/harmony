@@ -39,6 +39,11 @@ char OS_GetLastChar(WindowContext *window);
 // Returns true if ESC was pressed (consumes the press)
 bool OS_IsEscapePressed(void);
 
+// Returns true if F11 was pressed (consumes the press)
+bool OS_IsF11Pressed(void);
+
+void OS_SetFullscreen(WindowContext *window, bool fullscreen);
+
 // Cursor
 typedef enum {
     OS_CURSOR_ARROW,

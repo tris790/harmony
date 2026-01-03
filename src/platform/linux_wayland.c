@@ -192,6 +192,7 @@ static const struct wl_pointer_listener pointer_listener;
 struct wl_keyboard *keyboard;
 static char last_char = 0;
 static bool g_escape_pressed = false;
+static bool g_f11_pressed = false;
 
 static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_t format, int32_t fd, uint32_t size) {
     (void)data;
@@ -245,6 +246,11 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_t s
     if (pressed) {
         if (key == 1) {
             g_escape_pressed = true;
+            return;
+        }
+
+        if (key == 87) { // F11 is 87
+            g_f11_pressed = true;
             return;
         }
         
@@ -396,6 +402,21 @@ bool OS_IsEscapePressed(void) {
     bool pressed = g_escape_pressed;
     g_escape_pressed = false; // Consume
     return pressed;
+}
+
+bool OS_IsF11Pressed(void) {
+    bool pressed = g_f11_pressed;
+    g_f11_pressed = false; // Consume
+    return pressed;
+}
+
+void OS_SetFullscreen(WindowContext *win, bool fullscreen) {
+    if (!win || !win->xdg_toplevel) return;
+    if (fullscreen) {
+        xdg_toplevel_set_fullscreen(win->xdg_toplevel, NULL);
+    } else {
+        xdg_toplevel_unset_fullscreen(win->xdg_toplevel);
+    }
 }
 
 // --- Registry Listener ---

@@ -145,6 +145,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     
     int result = 0;
     while (OS_ProcessEvents(window)) {
+        if (OS_IsF11Pressed()) { static bool fs = false; fs = !fs; OS_SetFullscreen(window, fs); }
         // Check for ESC to return to menu
         if (OS_IsEscapePressed()) {
             printf("Host: ESC pressed, returning to menu.\n");
@@ -368,6 +369,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     
     int result = 0;
     while (OS_ProcessEvents(window)) {
+        if (OS_IsF11Pressed()) { static bool fs = false; fs = !fs; OS_SetFullscreen(window, fs); }
         // Check for ESC to return to menu
         if (OS_IsEscapePressed()) {
             printf("Viewer: ESC pressed, returning to menu.\n");
@@ -596,6 +598,7 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
     }
     
     while (OS_ProcessEvents(window)) {
+        if (OS_IsF11Pressed()) { static bool fs = false; fs = !fs; OS_SetFullscreen(window, fs); }
         int w = 1280, h = 720; 
         OS_GetWindowSize(window, &w, &h);
         int mx = 0, my = 0;
