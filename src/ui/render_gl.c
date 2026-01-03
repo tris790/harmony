@@ -207,10 +207,13 @@ void Render_DrawFrame(VideoFrame *frame, int target_width, int target_height) {
 }
 
 // --- UI Rendering ---
-#include "font_data.h"
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
 
 static GLuint ui_program;
 static GLuint font_tex;
+static stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
+static float font_height = 32.0f;
 
 
 static const char *ui_vs = 
@@ -263,35 +266,31 @@ static void InitUI() {
     // UI VBO (Dynamic)
     glGenBuffers(1, &ui_vbo);
     
-    // Font Texture
-    int tex_w = 128;
-    int tex_h = 64; // 16x8 grid of 8x8 chars
-    
-    TemporaryMemory temp = BeginTemporaryMemory(g_render_arena);
-    unsigned char *tex_data = ArenaPushZero(g_render_arena, tex_w * tex_h);
-    
-    for (int c = 0; c < 128; c++) {
-        int grid_x = c % 16;
-        int grid_y = c / 16;
-        int px_base = grid_x * 8;
-        int py_base = grid_y * 8;
-        
-        for (int row = 0; row < 8; row++) {
-            for (int col = 0; col < 8; col++) {
-                if (kFont8x8[c][row] & (1 << (7-col))) {
-                    tex_data[(py_base + row) * tex_w + (px_base + col)] = 255;
-                }
-            }
-        }
+    // Font Loading
+    FILE* f = fopen("src/ui/default.ttf", "rb");
+    if (!f) {
+        fprintf(stderr, "Failed to open font file src/ui/default.ttf\n");
+        return;
     }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    
+    unsigned char* ttf_buffer = (unsigned char*)ArenaPush(g_render_arena, size);
+    fread(ttf_buffer, 1, size, f);
+    fclose(f);
+
+    int tex_w = 512;
+    int tex_h = 512;
+    unsigned char* temp_bitmap = (unsigned char*)ArenaPushZero(g_render_arena, tex_w * tex_h);
+    
+    stbtt_BakeFontBitmap(ttf_buffer, 0, font_height, temp_bitmap, tex_w, tex_h, 32, 96, cdata);
     
     glGenTextures(1, &font_tex);
     glBindTexture(GL_TEXTURE_2D, font_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, tex_w, tex_h, 0, GL_ALPHA, GL_UNSIGNED_BYTE, tex_data);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    
-    EndTemporaryMemory(temp);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, tex_w, tex_h, 0, GL_ALPHA, GL_UNSIGNED_BYTE, temp_bitmap);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 }
 
 void Render_DrawRoundedRect(float x, float y, float w, float h, float rad, float r, float g, float b, float a) {
@@ -339,8 +338,6 @@ void Render_DrawText(const char *text, float x, float y, float scale, float r, f
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    
     glUniform2f(glGetUniformLocation(ui_program, "u_res"), (float)r_width, (float)r_height);
     glUniform4f(glGetUniformLocation(ui_program, "u_color"), r, g, b, a);
     glUniform1f(glGetUniformLocation(ui_program, "u_use_tex"), 1.0);
@@ -349,12 +346,12 @@ void Render_DrawText(const char *text, float x, float y, float scale, float r, f
     glBindTexture(GL_TEXTURE_2D, font_tex);
     glUniform1i(glGetUniformLocation(ui_program, "u_tex"), 0);
     
+    float font_scale = scale * (8.0f / font_height);
     float cursor_x = x;
-    float cursor_y = y;
-    float char_size = 8.0f * scale;
-    
-    // Simplicity: Draw character by character for now (inefficient but works)
-    
+    // Baseline offset: find a good default or calculate from ascent.
+    // Liberation Sans at 32px has roughly 26px ascent.
+    float cursor_y = y + (font_height * font_scale * 0.85f); 
+
     glBindBuffer(GL_ARRAY_BUFFER, ui_vbo);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), 0);
@@ -365,26 +362,29 @@ void Render_DrawText(const char *text, float x, float y, float scale, float r, f
         unsigned char c = (unsigned char)*text;
         if (c == '\n') {
             cursor_x = x;
-            cursor_y += char_size;
+            cursor_y += font_height * font_scale;
         } else if (c >= 32 && c < 128) {
-             int gx = c % 16;
-             int gy = c / 16;
-             float u1 = gx / 16.0f;
-             float v1 = gy / 8.0f;
-             float u2 = (gx + 1) / 16.0f;
-             float v2 = (gy + 1) / 8.0f;
+             stbtt_aligned_quad q;
+             float dummy_x = 0;
+             float dummy_y = 0;
+             stbtt_GetBakedQuad(cdata, 512, 512, c-32, &dummy_x, &dummy_y, &q, 1);
              
+             float x0 = cursor_x + q.x0 * font_scale;
+             float x1 = cursor_x + q.x1 * font_scale;
+             float y0 = cursor_y + q.y0 * font_scale;
+             float y1 = cursor_y + q.y1 * font_scale;
+
              float vdata[] = {
-                 cursor_x, cursor_y,              u1, v1,
-                 cursor_x+char_size, cursor_y,    u2, v1,
-                 cursor_x, cursor_y+char_size,    u1, v2,
-                 cursor_x+char_size, cursor_y+char_size, u2, v2
+                 x0, y0,    q.s0, q.t0,
+                 x1, y0,    q.s1, q.t0,
+                 x0, y1,    q.s0, q.t1,
+                 x1, y1,    q.s1, q.t1
              };
              
+             cursor_x += dummy_x * font_scale;
+
              glBufferData(GL_ARRAY_BUFFER, sizeof(vdata), vdata, GL_STREAM_DRAW);
              glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-             
-             cursor_x += char_size;
         }
         text++;
     }
@@ -393,12 +393,15 @@ void Render_DrawText(const char *text, float x, float y, float scale, float r, f
 
 float Render_GetTextWidth(const char *text, float scale) {
     if (!text) return 0.0f;
-    int len = 0;
+    float font_scale = scale * (8.0f / font_height);
+    float width = 0.0f;
     const char *p = text;
     while (*p) {
         unsigned char c = (unsigned char)*p;
-        if (c >= 32 && c < 128) len++;
+        if (c >= 32 && c < 128) {
+            width += cdata[c-32].xadvance;
+        }
         p++;
     }
-    return (float)len * 8.0f * scale;
+    return width * font_scale;
 }

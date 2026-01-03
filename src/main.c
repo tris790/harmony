@@ -974,51 +974,47 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config,
     // Draw Menu
     // Helper to center
     int cx = w / 2;
-    int cy = h / 2;
+
+    // Calculate total height for vertical centering
+    int total_h = 520;
+    if (config->is_host)
+      total_h += 100; // Extra for Audio Source label + dropdown
+    int y = (h - total_h) / 2;
 
     // Title
     // Lavender: #b4befe -> 0.71, 0.75, 1.00
     // Scale 4.0 for title
     UI_CenterNext(0); // 0 width means text width
-    UI_Label("Harmony Screen Share", 0, cy - 250, 4.0f);
-
-    // Mode Selection Labels (Subtitles)
-    // Subtext1: #a6adc8
-    UI_CenterNext(0);
-    UI_Label("Select Mode:", 0, cy - 180, 2.0f);
+    UI_Label("Harmony Screen Share", 0, y, 4.0f);
+    y += 80;
 
     // Buttons
-    // Host Button
-
-    // Use different color/style for selected? ui_simple.c handles hover, but we
-    // want 'Selected' state visualization We can just draw a selection
-    // indicator or rely on the label below.
-
-    if (UI_Button("HOST MODE", cx - 210, cy - 130, 200, 60)) {
+    // Stream/Watch Selection
+    if (UI_Button("Stream", cx - 210, y, 200, 40)) {
       config->is_host = true;
     }
 
-    if (UI_Button("VIEWER MODE", cx + 10, cy - 130, 200, 60)) {
+    if (UI_Button("Watch", cx + 10, y, 200, 40)) {
       config->is_host = false;
     }
 
     if (config->is_host) {
-      Render_DrawRect(cx - 210, cy - 65, 200, 4, 0.71f, 0.75f, 1.0f,
+      Render_DrawRect(cx - 210, y + 45, 200, 4, 0.71f, 0.75f, 1.0f,
                       1.0f); // Underline Host
     } else {
-      Render_DrawRect(cx + 10, cy - 65, 200, 4, 0.71f, 0.75f, 1.0f,
+      Render_DrawRect(cx + 10, y + 45, 200, 4, 0.71f, 0.75f, 1.0f,
                       1.0f); // Underline Viewer
     }
+    y += 80;
 
     // --- Public IP Section (Shared) ---
     static char public_ip[64] = "";
     static bool ip_fetched = false;
     static bool ip_copied = false;
 
-    int ip_y = cy - 40;
     if (!ip_fetched) {
       UI_CenterNext(0);
-      if (UI_Button("Show Public IP", 0, ip_y, 160, 30)) {
+      if (UI_Button("Show Public IP", 0, y, 160, 30)) {
         GetPublicIP(public_ip, sizeof(public_ip));
         if (strlen(public_ip) > 0) {
           ip_fetched = true;
@@ -1035,47 +1031,49 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config,
 
       int start_x = cx - total_w / 2;
 
-      Render_DrawText(buf, start_x, ip_y + 5, 1.8f, 0.9f, 0.9f, 0.95f, 1.0f);
+      Render_DrawText(buf, start_x, y + 5, 1.8f, 0.9f, 0.9f, 0.95f, 1.0f);
 
       // Copy Button next to it
-      if (UI_Button(ip_copied ? "Copied!" : "Copy", start_x + (int)tw + gap,
-                    ip_y, copy_btn_w, 30)) {
+      if (UI_Button(ip_copied ? "Copied!" : "Copy", start_x + (int)tw + gap, y,
+                    copy_btn_w, 30)) {
         OS_SetClipboardText(public_ip);
         ip_copied = true;
       }
     }
-
-    // Host Mode Specifics
+    y += 50;
 
     // IP Config
     UI_CenterNext(0);
-    UI_Label("Target IP Address:", 0, cy + 20, 2.0f);
+    UI_Label("Target IP Address:", 0, y, 2.0f);
+    y += 35;
 
     int input_w = 350;
     UI_CenterNext(input_w);
-    UI_TextInput("ip_input", config->target_ip, 64, 0, cy + 50, input_w, 50,
+    UI_TextInput("ip_input", config->target_ip, 64, 0, y, input_w, 40,
                  UI_INPUT_NUMERIC);
+    y += 60;
 
     // Password Config
     UI_CenterNext(0);
-    UI_Label("Stream Password:", 0, cy + 105, 1.8f);
+    UI_Label("Stream Password:", 0, y, 1.8f);
+    y += 35;
 
     UI_CenterNext(input_w);
-    UI_TextInput("pass_input", config->stream_password, 64, 0, cy + 130,
-                 input_w, 40, UI_INPUT_PASSWORD);
+    UI_TextInput("pass_input", config->stream_password, 64, 0, y, input_w, 40,
+                 UI_INPUT_PASSWORD);
+    y += 60;
 
     // Audio Source List
     if (config->is_host) {
-      int audio_y = cy + 175;
       UI_CenterNext(0);
-      UI_Label("Audio Source:", 0, audio_y, 2.0f);
+      UI_Label("Audio Source:", 0, y, 2.0f);
+      y += 35;
 
       // List Widget (Now Dropdown)
       int dropdown_w = 400;
       UI_CenterNext(dropdown_w);
       if (UI_Dropdown("audio_list", full_list.nodes, full_list.count,
-                      &config->selected_audio_node_id, 0, audio_y + 30,
-                      dropdown_w, 40)) {
+                      &config->selected_audio_node_id, 0, y, dropdown_w, 40)) {
         // Refresh on open!
         ArenaClear(&temp_arena);
         node_list.count = 0;
@@ -1090,14 +1088,13 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config,
           full_list.nodes[i + 1] = node_list.nodes[i];
         }
       }
+      y += 65;
     }
 
-    // Adjust Start Button Y position to be below list
-    // List ends at audio_y + 30 + 40 = audio_y + 70 = cy + 250
-
     // Start Button
+    const char *start_label = config->is_host ? "Broadcast" : "Watch";
     UI_CenterNext(250);
-    if (UI_Button("START HARMONY", 0, cy + 260, 250, 70) || enter) {
+    if (UI_Button(start_label, 0, y, 250, 40) || enter) {
       config->start_app = true;
       UI_EndFrame();
       OS_SwapBuffers(window);
