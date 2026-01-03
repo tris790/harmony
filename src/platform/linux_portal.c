@@ -69,7 +69,11 @@ static void ExtractSessionHandle(DBusMessage *response, char *out_handle, size_t
     }
 }
 
-uint32_t Portal_RequestScreenCast() {
+
+void Portal_RequestScreenCast(uint32_t *out_video_node, uint32_t *out_audio_node) {
+    if (out_video_node) *out_video_node = 0;
+    if (out_audio_node) *out_audio_node = 0;
+
     DBusError err;
     dbus_error_init(&err);
 
@@ -77,7 +81,7 @@ uint32_t Portal_RequestScreenCast() {
     if (dbus_error_is_set(&err)) {
         fprintf(stderr, "DBus Connection Error: %s\n", err.message);
         dbus_error_free(&err);
-        return 0;
+        return;
     }
 
     const char *portal_bus_name = "org.freedesktop.portal.Desktop";
@@ -113,7 +117,7 @@ uint32_t Portal_RequestScreenCast() {
     if (!reply) {
          fprintf(stderr, "CreateSession Call Failed: %s\n", err.message);
          dbus_error_free(&err);
-         return 0;
+         return;
     }
     
     char *request_path = NULL;
@@ -131,7 +135,7 @@ uint32_t Portal_RequestScreenCast() {
     
     if (strlen(session_handle) == 0) {
         fprintf(stderr, "Failed to get session handle\n");
-        return 0;
+        return;
     }
     printf("Session Handle: %s\n", session_handle);
 
@@ -144,7 +148,7 @@ uint32_t Portal_RequestScreenCast() {
     // Reuse existing iterators
     dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &array);
     
-    // cursor_mode = 2
+    // cursor_mode = 2 (Embedded)
     key = "cursor_mode"; 
     uint32_t uval = 2; 
     dbus_message_iter_open_container(&array, DBUS_TYPE_DICT_ENTRY, NULL, &dict);
@@ -154,7 +158,7 @@ uint32_t Portal_RequestScreenCast() {
     dbus_message_iter_close_container(&dict, &val);
     dbus_message_iter_close_container(&array, &dict);
 
-    // types = 3
+    // types = 3 (Monitor | Window)
     key = "types";
     uval = 3;
     dbus_message_iter_open_container(&array, DBUS_TYPE_DICT_ENTRY, NULL, &dict);
@@ -193,7 +197,7 @@ uint32_t Portal_RequestScreenCast() {
     if (!reply) {
          fprintf(stderr, "Start Call Failed: %s\n", err.message);
          dbus_error_free(&err);
-         return 0;
+         return;
     }
     
     dbus_message_get_args(reply, &err, DBUS_TYPE_OBJECT_PATH, &request_path, DBUS_TYPE_INVALID);
@@ -204,33 +208,61 @@ uint32_t Portal_RequestScreenCast() {
     resp = WaitForResponse(start_req_path);
     
     // Parse Start response for streams
-    uint32_t node_id = 0;
+    // Response signature: (u, a(u{sv})) where u=response_code, a=streams
     
     dbus_message_iter_init(resp, &args);
     uint32_t rc;
     dbus_message_iter_get_basic(&args, &rc);
     if (rc == 0) {
         dbus_message_iter_next(&args);
-        DBusMessageIter r_iter, r_dict, r_v, str_arr, str_entry;
-        dbus_message_iter_recurse(&args, &r_iter);
         
-        while(dbus_message_iter_get_arg_type(&r_iter) != DBUS_TYPE_INVALID) {
-            dbus_message_iter_recurse(&r_iter, &r_dict);
-            dbus_message_iter_get_basic(&r_dict, &key);
-            dbus_message_iter_next(&r_dict);
-            dbus_message_iter_recurse(&r_dict, &r_v);
-            
-            if(strcmp(key, "streams") == 0) {
-                dbus_message_iter_recurse(&r_v, &str_arr);
-                 // Array of (node_id, map)
-                 dbus_message_iter_recurse(&str_arr, &str_entry); // Struct
-                 dbus_message_iter_get_basic(&str_entry, &node_id);
-            }
-            dbus_message_iter_next(&r_iter);
+        DBusMessageIter results_iter, streams_val, streams_iter, stream_entry, props_iter;
+        dbus_message_iter_recurse(&args, &results_iter);
+        
+        // Find "streams" key in results dict
+        while(dbus_message_iter_get_arg_type(&results_iter) != DBUS_TYPE_INVALID) {
+             DBusMessageIter entry;
+             dbus_message_iter_recurse(&results_iter, &entry);
+             const char *r_key;
+             dbus_message_iter_get_basic(&entry, &r_key);
+             dbus_message_iter_next(&entry);
+             
+             if(strcmp(r_key, "streams") == 0) {
+                 dbus_message_iter_recurse(&entry, &streams_val); // variant -> array
+                 dbus_message_iter_recurse(&streams_val, &streams_iter); // array contents
+                 
+                 // Iterate over streams
+                 while(dbus_message_iter_get_arg_type(&streams_iter) != DBUS_TYPE_INVALID) {
+                     uint32_t node_id;
+                     dbus_message_iter_recurse(&streams_iter, &stream_entry); // struct (u, {sv})
+                     dbus_message_iter_get_basic(&stream_entry, &node_id);
+                     dbus_message_iter_next(&stream_entry);
+
+                     printf("Portal: Found Stream Node ID: %u\n", node_id);
+                     
+                     // Helper: Check properties to guess type? 
+                     // For now, naive strategy:
+                     // 1st node = Video, 2nd node = Audio
+                     // But we can check keys if we want.
+                     // Let's dump keys for debug
+                     dbus_message_iter_recurse(&stream_entry, &props_iter); // props dict
+                     // (Optional: Parsing props)
+                     
+                     // Assignment Logic:
+                     if (out_video_node && *out_video_node == 0) {
+                         *out_video_node = node_id;
+                         printf("  -> Assigned as VIDEO\n");
+                     } else if (out_audio_node && *out_audio_node == 0) {
+                         *out_audio_node = node_id;
+                         printf("  -> Assigned as AUDIO\n");
+                     }
+                     
+                     dbus_message_iter_next(&streams_iter);
+                 }
+             }
+             dbus_message_iter_next(&results_iter);
         }
     }
     
     dbus_message_unref(resp);
-    
-    return node_id;
 }

@@ -28,6 +28,10 @@ InputState OS_GetInputState(WindowContext *window);
 // Input
 void OS_GetMouseState(WindowContext *window, int *x, int *y, bool *left_down);
 
+// Returns the accumulated vertical mouse scroll delta since the last call.
+// Positive = up/away, Negative = down/towards.
+int OS_GetMouseScroll(WindowContext *window);
+
 // Returns the last ASCII character pressed, or 0 if none.
 // Very basic input handling for MVP.
 char OS_GetLastChar(WindowContext *window);

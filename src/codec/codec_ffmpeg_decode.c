@@ -140,3 +140,13 @@ void Codec_DecodePacket(DecoderContext *ctx, EncodedPacket *packet, VideoFrame *
     av_packet_free(&av_pkt);
 }
 
+void Codec_CloseDecoder(DecoderContext *ctx) {
+    if (!ctx) return;
+    if (ctx->codec_ctx) {
+        avcodec_free_context(&ctx->codec_ctx);
+    }
+    if (ctx->frame_yuv) {
+        av_frame_free(&ctx->frame_yuv);
+    }
+}
+

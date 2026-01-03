@@ -26,6 +26,12 @@ NetworkContext* Net_Init(MemoryArena *arena, int port, bool is_server) {
     int flags = fcntl(ctx->sockfd, F_GETFL, 0);
     fcntl(ctx->sockfd, F_SETFL, flags | O_NONBLOCK);
 
+    // Allow port reuse for faster recovery on restart
+    int reuse = 1;
+    if (setsockopt(ctx->sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        perror("Net_Init: setsockopt SO_REUSEADDR");
+    }
+
     // Increase Socket Buffers to prevent drops during large keyframe bursts
     int rcvbuf = 4 * 1024 * 1024; // 4MB
     int sndbuf = 4 * 1024 * 1024; // 4MB
@@ -85,4 +91,11 @@ int Net_Recv(NetworkContext *ctx, void *buffer, size_t buffer_size, char *out_se
     }
 
     return 0;
+}
+
+void Net_Close(NetworkContext *ctx) {
+    if (ctx && ctx->sockfd >= 0) {
+        close(ctx->sockfd);
+        ctx->sockfd = -1;
+    }
 }

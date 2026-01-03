@@ -17,4 +17,6 @@ void Capture_Poll(CaptureContext *ctx);
 // Note: This frame might be internal to the context and valid only until next Poll.
 struct VideoFrame* Capture_GetFrame(CaptureContext *ctx);
 
+void Capture_Close(CaptureContext *ctx);
+
 #endif // HARMONY_CAPTURE_API_H

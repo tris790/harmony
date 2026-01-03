@@ -8,6 +8,7 @@ typedef struct PersistentConfig {
     bool is_host;
     bool verbose;
     char target_ip[64];
+    bool use_portal_audio;
 } PersistentConfig;
 
 // Load config from OS-specific location. Returns false if file doesn't exist.

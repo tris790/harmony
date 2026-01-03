@@ -197,3 +197,13 @@ struct VideoFrame* Capture_GetFrame(CaptureContext *ctx) {
     }
     return NULL;
 }
+
+void Capture_Close(CaptureContext *ctx) {
+    if (ctx) {
+        if (ctx->stream) pw_stream_destroy(ctx->stream);
+        if (ctx->core) pw_core_disconnect(ctx->core);
+        if (ctx->context) pw_context_destroy(ctx->context);
+        if (ctx->loop) pw_main_loop_destroy(ctx->loop);
+        pw_deinit();
+    }
+}

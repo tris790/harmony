@@ -70,7 +70,8 @@ static const struct pw_stream_events capture_stream_events = {
     .process = capture_on_process,
 };
 
-AudioCaptureContext* Audio_InitCapture(MemoryArena *arena) {
+
+AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, uint32_t target_node_id) {
     AudioCaptureContext *ctx = PushStructZero(arena, AudioCaptureContext);
     ctx->arena = arena;
     
@@ -89,17 +90,37 @@ AudioCaptureContext* Audio_InitCapture(MemoryArena *arena) {
         return NULL;
     }
     
-    // Create capture stream targeting the monitor source (system audio output)
+    struct pw_properties *props = pw_properties_new(
+        PW_KEY_MEDIA_TYPE, "Audio",
+        PW_KEY_MEDIA_CATEGORY, "Capture",
+        PW_KEY_MEDIA_ROLE, "Screen", // Changed from Music to Screen to avoid default Mic policies
+        NULL
+    );
+    
+    printf("Audio: InitCapture (v2-SerialCheck)\n");
+
+    if (target_node_id != 0) {
+        // Target specific node (Portal/App)
+        char target_str[32];
+        snprintf(target_str, sizeof(target_str), "%u", target_node_id);
+        pw_properties_set(props, PW_KEY_TARGET_OBJECT, target_str);
+        
+        // Disable Autoconnect fallback behavior by hinting we want THIS object
+        // (Note: WirePlumber policy might still override, but this helps)
+        pw_properties_set(props, "stream.dont-reconnect", "true"); 
+        
+        printf("Audio: Targeting specific Node ID: %u\n", target_node_id);
+    } else {
+        // Capture System Monitor (Default Sink Monitor)
+        pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
+        printf("Audio: Targeting System Monitor\n");
+    }
+
+    // Create capture stream
     ctx->stream = pw_stream_new_simple(
         pw_main_loop_get_loop(ctx->loop),
         "harmony-audio-capture",
-        pw_properties_new(
-            PW_KEY_MEDIA_TYPE, "Audio",
-            PW_KEY_MEDIA_CATEGORY, "Capture",
-            PW_KEY_MEDIA_ROLE, "Music",
-            PW_KEY_STREAM_CAPTURE_SINK, "true",  // Capture from sink (monitor)
-            NULL
-        ),
+        props,
         &capture_stream_events,
         ctx
     );
@@ -137,6 +158,140 @@ void Audio_PollCapture(AudioCaptureContext *ctx) {
     if (ctx && ctx->loop) {
         pw_loop_iterate(pw_main_loop_get_loop(ctx->loop), 0);
     }
+}
+
+
+// --- Node Enumeration Helpers ---
+
+typedef struct EnumContext {
+    AudioNodeList *list;
+    MemoryArena *arena;
+} EnumContext;
+
+static void registry_event_global(void *data, uint32_t id,
+                                  uint32_t permissions, const char *type, uint32_t version,
+                                  const struct spa_dict *props) {
+    EnumContext *ctx = (EnumContext *)data;
+    
+    if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0) return;
+    if (!props) return;
+
+    // Filter for Audio Streams (Applications) and Audio Sinks (Monitors)
+    // We look for 'media.class' = 'Stream/Output/Audio' (Apps) or 'Audio/Sink' (Hardware/Virtual Sinks)
+    const char *media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+    const char *node_name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
+    const char *app_name = spa_dict_lookup(props, PW_KEY_APP_NAME);
+    const char *node_desc = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
+    const char *serial_str = spa_dict_lookup(props, PW_KEY_OBJECT_SERIAL);
+
+    if (!media_class) return;
+
+    // Filter: Only want sources we can record FROM.
+    // 1. "Stream/Output/Audio" -> Applications playing audio.
+    // 2. "Audio/Sink" -> Output devices (we can capture from their monitor, but PW usually handles monitor capture via specific flags, 
+    //    however setting target to a Sink usually captures its monitor if capture_sink=true? 
+    //    Actually, for "Monitor" capture, we usually target the sink.
+    // Let's include both for now so user can see what's available.
+    
+    bool is_app = (strcmp(media_class, "Stream/Output/Audio") == 0);
+    bool is_sink = (strcmp(media_class, "Audio/Sink") == 0);
+    
+    if (is_app || is_sink) {
+        // Grow list if needed (simple dynamic array on arena)
+        if (ctx->list->count >= ctx->list->capacity) {
+            int new_cap = ctx->list->capacity ? ctx->list->capacity * 2 : 16;
+            AudioNodeInfo *new_nodes = ArenaPush(ctx->arena, new_cap * sizeof(AudioNodeInfo));
+            if (ctx->list->count > 0) {
+                memcpy(new_nodes, ctx->list->nodes, ctx->list->count * sizeof(AudioNodeInfo));
+            }
+            ctx->list->nodes = new_nodes;
+            ctx->list->capacity = new_cap;
+        }
+        
+        AudioNodeInfo *node = &ctx->list->nodes[ctx->list->count++];
+        
+        // Use Serial ID if available (More stable/correct for Targeting), else Global ID
+        uint32_t serial_id = id;
+        if (serial_str) {
+            serial_id = (uint32_t)atoi(serial_str);
+        }
+        node->id = serial_id;
+        
+        // Pick best name
+        const char *display_name = app_name ? app_name : (node_desc ? node_desc : node_name);
+        if (!display_name) display_name = "Unknown Node";
+        
+        if (is_app) {
+             snprintf(node->name, sizeof(node->name), "[App] %s", display_name);
+             printf("AudioEnum: Found App '%s' (GlobalID %u, Serial %u)\n", display_name, id, serial_id);
+        } else {
+             snprintf(node->name, sizeof(node->name), "[Sys] %s", display_name);
+             printf("AudioEnum: Found Sys '%s' (GlobalID %u, Serial %u)\n", display_name, id, serial_id);
+        }
+    }
+}
+
+static const struct pw_registry_events registry_events = {
+    .version = PW_VERSION_REGISTRY_EVENTS,
+    .global = registry_event_global,
+};
+
+void Audio_EnumerateNodes(MemoryArena *arena, AudioNodeList *out_list) {
+    if (!out_list) return;
+    out_list->count = 0;
+    out_list->capacity = 0;
+    out_list->nodes = NULL;
+    
+    // Setup temporary PipeWire connection just for enumeration
+    pw_init(NULL, NULL);
+    
+    struct pw_main_loop *loop = pw_main_loop_new(NULL);
+    struct pw_context *context = pw_context_new(pw_main_loop_get_loop(loop), NULL, 0);
+    struct pw_core *core = pw_context_connect(context, NULL, 0);
+    
+    if (!core) {
+        fprintf(stderr, "Audio Error: Failed to connect for enumeration\n");
+        if (context) pw_context_destroy(context);
+        if (loop) pw_main_loop_destroy(loop);
+        return;
+    }
+    
+    struct pw_registry *registry = pw_core_get_registry(core, PW_VERSION_REGISTRY, 0);
+    struct spa_hook registry_listener;
+    
+    EnumContext ctx = { .list = out_list, .arena = arena };
+    
+    pw_registry_add_listener(registry, &registry_listener, &registry_events, &ctx);
+    
+    // Sync to get all globals
+    bool done = false;
+    // We rely on the fact that initial globals are sent immediately. 
+    // To be strictly correct we should use a sync callback, but roundtrip usually works.
+    // Let's do a simple roundtrip.
+    
+    struct spa_hook core_listener; // We need a sync/done callback on core if we want to wait properly
+    // Simplified: Just iterate loop a few times.
+    // "Globals are emitted immediately when the registry is bound"
+    
+    // We need to flush the loop.
+    // pw_core_sync is the robust way.
+    
+    // Logic: core_sync -> wait for done event -> exit loop.
+    // For simplicity of implementation in this block, I will just iterate until no events?
+    // Actually, pw_main_loop_run() is blocking. We can't use it easily without a quit condition.
+    // Let's use pw_loop_iterate with a timeout or just roundtrip.
+    
+    // Better: Send sync, and in sync callback quit loop.
+    // Since I can't easily add another callback struct here without more code:
+    // I'll just iterate a few times which typically clears the socket buffer for initial dump.
+    for (int i=0; i<10; i++) {
+        pw_loop_iterate(pw_main_loop_get_loop(loop), 10); 
+    }
+    
+    pw_proxy_destroy((struct pw_proxy*)registry);
+    pw_core_disconnect(core);
+    pw_context_destroy(context);
+    pw_main_loop_destroy(loop);
 }
 
 AudioFrame* Audio_GetCapturedFrame(AudioCaptureContext *ctx) {

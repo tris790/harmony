@@ -23,10 +23,26 @@ typedef struct EncodedAudio {
     size_t size;
 } EncodedAudio;
 
+// --- Node Enumeration ---
+typedef struct AudioNodeInfo {
+    uint32_t id;
+    char name[128];
+} AudioNodeInfo;
+
+typedef struct AudioNodeList {
+    AudioNodeInfo *nodes;
+    int count;
+    int capacity;
+} AudioNodeList;
+
+// Enumerate available audio nodes (applications/sinks)
+// Returns list in arena. Caller doesn't need to free if using temporary arena.
+void Audio_EnumerateNodes(MemoryArena *arena, AudioNodeList *out_list);
+
 // --- Audio Capture (Host) ---
 typedef struct AudioCaptureContext AudioCaptureContext;
 
-AudioCaptureContext* Audio_InitCapture(MemoryArena *arena);
+AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, uint32_t target_node_id);
 void Audio_PollCapture(AudioCaptureContext *ctx);
 AudioFrame* Audio_GetCapturedFrame(AudioCaptureContext *ctx);
 void Audio_CloseCapture(AudioCaptureContext *ctx);

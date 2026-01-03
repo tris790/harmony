@@ -12,12 +12,12 @@
 #include <stdlib.h> // For getenv
 
 // Forward Declaration (should be in a header)
-uint32_t Portal_RequestScreenCast();
+
 
 // ... (Headers remain)
 
 // Forward Declaration
-uint32_t Portal_RequestScreenCast();
+void Portal_RequestScreenCast(uint32_t *out_video_node, uint32_t *out_audio_node);
 
 // --- HOST MODE ---
 typedef struct NetCallbackData {
@@ -62,7 +62,7 @@ static int CalculateTargetBitrate(int width, int height, int fps) {
     return (int)(width * height * fps * 0.08f);
 }
 
-int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose) {
+int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bool verbose, uint32_t audio_node_id) {
     printf("Starting HOST Mode...\n");
     
     MemoryArena packet_arena;
@@ -73,18 +73,29 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
 
     // Request Screen Share Permissions
     printf("Requesting Screen Share... Please acknowledge dialog.\n");
-    uint32_t node_id = Portal_RequestScreenCast();
-    if (node_id == 0) {
+    uint32_t video_node_id = 0;
+    // We ignore the portal audio node now, because we use our own selection.
+    // But we still need to pass a pointer to match signature.
+    uint32_t portal_audio_node = 0; 
+    Portal_RequestScreenCast(&video_node_id, &portal_audio_node);
+    
+    if (video_node_id == 0) {
         printf("FAILURE! Could not get screen stream. Exiting.\n");
         return 1;
     }
-    printf("SUCCESS! Got Stream Node ID: %u\n", node_id);
+    printf("SUCCESS! Got Video Node ID: %u, Audio Node ID: %u\n", video_node_id, audio_node_id);
     
-    CaptureContext *capture = Capture_Init(arena, node_id);
+    CaptureContext *capture = Capture_Init(arena, video_node_id);
     if (!capture) return 1;
 
     // Audio capture and encoding
-    AudioCaptureContext *audio_capture = Audio_InitCapture(arena);
+    // If use_portal_audio is true (which we repurpose as "Specific Node Selected" logic implicitly by ID > 0),
+    // or we just pass the ID. If 0, PipeWire captures default monitor.
+    // However, our new UI sets explicit ID.
+    // If ID == 0 (Default), it captures default input/monitor used by PW.
+    // Let's rely on that.
+    
+    AudioCaptureContext *audio_capture = Audio_InitCapture(arena, audio_node_id);
     AudioEncoder *audio_encoder = Audio_InitEncoder(arena);
     if (!audio_capture || !audio_encoder) {
         printf("Host: Audio initialization failed (continuing without audio)\n");
@@ -135,11 +146,13 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
     float time_since_host_punch = 0.0f;
     const float HOST_PUNCH_INTERVAL = 0.5f;
     
+    int result = 0;
     while (OS_ProcessEvents(window)) {
         // Check for ESC to return to menu
         if (OS_IsEscapePressed()) {
             printf("Host: ESC pressed, returning to menu.\n");
-            return 2; // Return to menu
+            result = 2;
+            break;
         }
         
         // Get window size for UI
@@ -195,7 +208,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
             Capture_GetFrame(capture); // Discard frames while waiting
             
             // Draw waiting UI
-            Render_DrawRect(0, 0, w, h, 0.1f, 0.1f, 0.15f, 1.0f);
+            Render_Clear(0.1f, 0.1f, 0.15f, 1.0f);
             char wait_msg[128];
             snprintf(wait_msg, sizeof(wait_msg), "Waiting for viewer at %s:9999...", target_ip);
             Render_DrawText(wait_msg, w/2 - 200, h/2, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
@@ -273,7 +286,6 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
                     Protocol_SendFrame(&packetizer, pkt.data, pkt.size, Net_SendPacketCallback, &net_cb);
                     frames_encoded++;
                     time_since_last_send = 0.0f; // Reset keepalive timer
-                    if (frames_encoded % 30 == 0) printf("Host: Sent VIDEO Frame %d (%zu bytes)\n", frames_encoded, pkt.size);
                 }
             }
         } else {
@@ -293,7 +305,15 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip, bo
         
         OS_SwapBuffers(window);
     }
-    return 0;
+
+    // Cleanup
+    if (encoder) Codec_CloseEncoder(encoder);
+    if (audio_capture) Audio_CloseCapture(audio_capture);
+    if (audio_encoder) Audio_CloseEncoder(audio_encoder);
+    if (capture) Capture_Close(capture);
+    if (net) Net_Close(net);
+
+    return result;
 }
 
 // --- VIEWER MODE ---
@@ -349,11 +369,13 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
     const float BANDWIDTH_WINDOW = 1.0f; // Measure over 1 second
     float current_mbps = 0.0f;
     
+    int result = 0;
     while (OS_ProcessEvents(window)) {
         // Check for ESC to return to menu
         if (OS_IsEscapePressed()) {
             printf("Viewer: ESC pressed, returning to menu.\n");
-            return 2; // Return to menu
+            result = 2;
+            break;
         }
         
         // Send punch packet periodically (UDP hole punching)
@@ -369,7 +391,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         
         // 1. Receive Packets
         uint8_t buf[2048]; 
-        char sender_ip[INET_ADDRSTRLEN];
+        char sender_ip[16];
         int sender_port;
         
         int n;
@@ -410,8 +432,6 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                 if (hdr->frame_id > video_reassembler.active_buffer.frame_id) {
                     if (video_reassembler.active_buffer.frame_id > 0 && 
                         video_reassembler.active_buffer.received_bytes < video_reassembler.active_buffer.total_size) {
-                    if (video_reassembler.active_buffer.frame_id > 0 && 
-                        video_reassembler.active_buffer.received_bytes < video_reassembler.active_buffer.total_size) {
                         static double last_drop_log = 0;
                         double now = OS_GetTime();
                         if (now - last_drop_log >= 5.0) { 
@@ -422,7 +442,6 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                                 hdr->frame_id);
                             last_drop_log = now;
                         }
-                    }
                     }
                 }
                 res = Protocol_HandlePacket(&video_reassembler, buf, n, &frame_data, &frame_size, &packet_type);
@@ -452,14 +471,6 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
 
                     received_frame_this_tick = true;
                     received_any_packet = true;
-                    
-                    // Log frame info periodically
-                    if (decoded_frame.width > 0 && decoded_frame.height > 0) {
-                        if (frames_decoded++ % 30 == 0 && verbose) {
-                            printf("Viewer: Decoded Frame %d (%dx%d) from %s:%d\n", 
-                                frames_decoded, decoded_frame.width, decoded_frame.height, sender_ip, sender_port);
-                        }
-                    }
                 }
             }
         }
@@ -517,7 +528,7 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
                 Render_DrawText(meta_text2, 20, 60, 1.5f, 0.8f, 0.8f, 0.8f, 1.0f);
             }
         } else {
-             Render_DrawRect(0, 0, win_w, win_h, 0.1f, 0.1f, 0.1f, 1.0f);
+             Render_Clear(0.1f, 0.1f, 0.1f, 1.0f);
              Render_DrawText("Waiting for stream...", win_w/2 - 100, win_h/2, 2.0f, 0.8f, 0.8f, 0.8f, 1.0f);
         }
         
@@ -525,6 +536,15 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip, bo
         // If we draw frame, it covers screen.
         OS_SwapBuffers(window);
     }
+
+    // Cleanup
+    if (decoder) Codec_CloseDecoder(decoder);
+    if (audio_decoder) Audio_CloseDecoder(audio_decoder);
+    if (audio_playback) Audio_ClosePlayback(audio_playback);
+    if (net) Net_Close(net);
+
+    return result;
+}
     return 0;
 }
 
@@ -533,6 +553,7 @@ typedef struct AppConfig {
     bool is_host;
     bool verbose;
     char target_ip[64];
+    uint32_t selected_audio_node_id; 
     bool start_app;
 } AppConfig;
 
@@ -543,7 +564,41 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
     strcpy(config->target_ip, saved_config->target_ip);
     config->is_host = saved_config->is_host;
     config->verbose = saved_config->verbose;
+    config->selected_audio_node_id = 0; // Default System
     config->start_app = false;
+    
+    // Audio Node List
+    MemoryArena temp_arena;
+    ArenaInit(&temp_arena, 1024 * 1024); // 1MB temp
+    AudioNodeList node_list = {0};
+    Audio_EnumerateNodes(&temp_arena, &node_list);
+    
+    // Add "System Default" as first option if not present or explicit 0
+    // Actually our enum might return monitors. 
+    // Let's verify if we need to manually insert "Default (ID 0)".
+    // The previous implementation used ID 0 for default.
+    // Let's prepend a "System Default" option manually in rendering or struct?
+    // Easiest is to add it to the list.
+    
+    // Create new list with +1 slot
+    // Create new list with +11 slots (1 for Default, 10 for Fake testing)
+    AudioNodeList full_list = {0};
+    full_list.nodes = ArenaPush(&temp_arena, (node_list.count + 11) * sizeof(AudioNodeInfo));
+    full_list.count = node_list.count + 11;
+    full_list.nodes[0].id = 0;
+    strcpy(full_list.nodes[0].name, "[Default] System Audio");
+    
+    // Copy real nodes
+    for(int i=0; i<node_list.count; i++) {
+        full_list.nodes[i+1] = node_list.nodes[i];
+    }
+
+    // Add 10 Fake nodes for scroll testing
+    for (int i = 0; i < 10; i++) {
+        int idx = node_list.count + 1 + i;
+        full_list.nodes[idx].id = 1000 + i;
+        snprintf(full_list.nodes[idx].name, sizeof(full_list.nodes[idx].name), "Fake Audio Source %d", i + 1);
+    }
     
     while (OS_ProcessEvents(window)) {
         int w = 1280, h = 720; 
@@ -551,13 +606,14 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         int mx = 0, my = 0;
         bool mdown = false;
         OS_GetMouseState(window, &mx, &my, &mdown);
+        int mscroll = OS_GetMouseScroll(window);
         char c = OS_GetLastChar(window);
         
-        UI_BeginFrame(w, h, mx, my, mdown, c);
+        UI_BeginFrame(w, h, mx, my, mdown, mscroll, c);
         
         // Draw Background
         // Mocha Base: #1e1e2e -> 0.12, 0.12, 0.18
-        Render_DrawRect(0, 0, w, h, 0.12f, 0.12f, 0.18f, 1.0f);
+        Render_Clear(0.12f, 0.12f, 0.18f, 1.0f);
         
         // Draw Menu
         // Helper to center
@@ -601,12 +657,25 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config, const
         Render_DrawText("Target IP Address:", cx - 125, cy + 20, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
         UI_TextInput("ip_input", config->target_ip, 64, cx - 125, cy + 50, 250, 50);
         
-        // Start Button
-        // Greenish variant for Start? #a6e3a1 (0.65, 0.89, 0.63)
-        // We need to override color or just use default blue button.
-        // Let's use default for consistency but maybe larger.
+        // Audio Source List
+        if (config->is_host) {
+            int audio_y = cy + 120;
+            Render_DrawText("Audio Source:", cx - 125, audio_y, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
+            
+            // List Widget (Now Dropdown)
+            UI_Dropdown("audio_list", full_list.nodes, full_list.count, &config->selected_audio_node_id, 
+                    cx - 125, audio_y + 30, 400, 40);
+        }
         
-        if (UI_Button("START HARMONY", cx - 125, cy + 150, 250, 70)) {
+        // Adjust Start Button Y position to be below list
+        // List ends at audio_y + 30 + 150 = audio_y + 180 = cy + 300
+        
+        // Start Button
+        // Adjusted Y position for compact dropdown (dropdown ends at audio_y + 30 + 40 = audio_y + 70)
+        // audio_y is cy + 120. So ends at cy + 190.
+        // Button at cy + 220 is good spacing.
+        
+        if (UI_Button("START HARMONY", cx - 125, cy + 220, 250, 70)) {
             config->start_app = true;
             UI_EndFrame();
             OS_SwapBuffers(window);
@@ -654,12 +723,13 @@ int main(int argc, char **argv) {
             // Save config before starting (in case app crashes)
             saved_config.is_host = config.is_host;
             saved_config.verbose = config.verbose;
+            // saved_config.use_portal_audio = config.use_portal_audio; // Removed for now
             strcpy(saved_config.target_ip, config.target_ip);
             Config_Save(&saved_config);
             
             int result;
             if (config.is_host) {
-                result = RunHost(&main_arena, window, config.target_ip, config.verbose);
+                result = RunHost(&main_arena, window, config.target_ip, config.verbose, config.selected_audio_node_id);
             } else {
                 result = RunViewer(&main_arena, window, config.target_ip, config.verbose);
             }

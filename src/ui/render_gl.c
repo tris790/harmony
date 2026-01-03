@@ -110,6 +110,11 @@ void Render_SetScreenSize(int width, int height) {
     }
 }
 
+void Render_Clear(float r, float g, float b, float a) {
+    glClearColor(r, g, b, a);
+    glClear(GL_COLOR_BUFFER_BIT);
+}
+
 void Render_DrawFrame(VideoFrame *frame, int target_width, int target_height) {
     if (!frame || frame->width == 0) return;
     
@@ -119,8 +124,7 @@ void Render_DrawFrame(VideoFrame *frame, int target_width, int target_height) {
     glViewport(0, 0, target_width, target_height);
     
     // Clear background to black to handle letterboxing/sizing changes
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    Render_Clear(0.0f, 0.0f, 0.0f, 1.0f);
     
     // Calculate Aspect Ratio (Letterboxing)
     float video_aspect = (float)frame->width / (float)frame->height;

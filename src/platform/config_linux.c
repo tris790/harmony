@@ -50,6 +50,7 @@ bool Config_Load(PersistentConfig *config) {
     // Set defaults first
     config->is_host = true;
     config->verbose = false;
+    config->use_portal_audio = false;
     strcpy(config->target_ip, "127.0.0.1");
     
     const char *path = GetConfigPath();
@@ -85,6 +86,8 @@ bool Config_Load(PersistentConfig *config) {
         } else if (strcmp(key, "target_ip") == 0) {
             strncpy(config->target_ip, value, sizeof(config->target_ip) - 1);
             config->target_ip[sizeof(config->target_ip) - 1] = '\0';
+        } else if (strcmp(key, "use_portal_audio") == 0) {
+            config->use_portal_audio = (strcmp(value, "true") == 0);
         }
     }
     
@@ -110,6 +113,7 @@ bool Config_Save(const PersistentConfig *config) {
     fprintf(f, "is_host=%s\n", config->is_host ? "true" : "false");
     fprintf(f, "verbose=%s\n", config->verbose ? "true" : "false");
     fprintf(f, "target_ip=%s\n", config->target_ip);
+    fprintf(f, "use_portal_audio=%s\n", config->use_portal_audio ? "true" : "false");
     
     fclose(f);
     printf("Config: Saved to %s\n", path);

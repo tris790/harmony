@@ -42,5 +42,6 @@ typedef struct DecoderContext DecoderContext;
 
 DecoderContext* Codec_InitDecoder(MemoryArena *arena);
 void Codec_DecodePacket(DecoderContext *ctx, EncodedPacket *packet, VideoFrame *out_frame);
+void Codec_CloseDecoder(DecoderContext *ctx);
 
 #endif // HARMONY_CODEC_API_H

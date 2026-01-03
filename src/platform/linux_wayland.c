@@ -30,6 +30,7 @@ static struct wl_pointer *g_pointer = NULL;
 static double g_mouse_x = 0;
 static double g_mouse_y = 0;
 static bool g_mouse_left_down = false;
+static double g_mouse_scroll_delta = 0;
 
 // --- Window Context ---
 struct WindowContext {
@@ -177,6 +178,9 @@ static void pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t s
 }
 
 static void pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time, uint32_t axis, wl_fixed_t value) {
+    if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+        g_mouse_scroll_delta -= wl_fixed_to_double(value);
+    }
 }
 
 static const struct wl_pointer_listener pointer_listener = {
@@ -302,7 +306,7 @@ WindowContext* OS_CreateWindow(MemoryArena *arena, int width, int height, const 
         EGL_RED_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
+        EGL_ALPHA_SIZE, 0,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_NONE
     };
@@ -368,6 +372,20 @@ void OS_GetMouseState(WindowContext *window, int *x, int *y, bool *left_down) {
     if (x) *x = (int)g_mouse_x;
     if (y) *y = (int)g_mouse_y;
     if (left_down) *left_down = g_mouse_left_down;
+}
+
+int OS_GetMouseScroll(WindowContext *window) {
+    int scroll = 0;
+    // Standard Wayland axis values are usually ~10 per "click"
+    // We'll normalize this a bit for the UI.
+    if (g_mouse_scroll_delta >= 10.0) {
+        scroll = 1;
+        g_mouse_scroll_delta -= 10.0;
+    } else if (g_mouse_scroll_delta <= -10.0) {
+        scroll = -1;
+        g_mouse_scroll_delta += 10.0;
+    }
+    return scroll;
 }
 
 // Listeners moved above seat_capabilities
