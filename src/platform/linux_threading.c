@@ -10,9 +10,27 @@ struct OS_Thread {
     pthread_t handle;
 };
 
+typedef struct {
+    OS_ThreadProc proc;
+    void *data;
+} ThreadWrapperArgs;
+
+static void* ThreadWrapper(void *arg) {
+    ThreadWrapperArgs *args = (ThreadWrapperArgs *)arg;
+    OS_ThreadProc proc = args->proc;
+    void *data = args->data;
+    free(args);
+    proc(data);
+    return NULL;
+}
+
 OS_Thread* OS_ThreadCreate(OS_ThreadProc proc, void *data) {
     OS_Thread *thread = (OS_Thread *)malloc(sizeof(OS_Thread));
-    if (pthread_create(&thread->handle, NULL, (void* (*)(void*))proc, data) != 0) {
+    ThreadWrapperArgs *args = (ThreadWrapperArgs *)malloc(sizeof(ThreadWrapperArgs));
+    args->proc = proc;
+    args->data = data;
+    if (pthread_create(&thread->handle, NULL, ThreadWrapper, args) != 0) {
+        free(args);
         free(thread);
         return NULL;
     }

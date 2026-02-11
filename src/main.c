@@ -12,7 +12,7 @@
 #include <stdlib.h> // For getenv
 #include <unistd.h>
 
-#include "core/queue.h"
+#include "core/ring_buffer.h"
 #include "net/aes.h"
 #include "net/websocket.h"
 
@@ -27,7 +27,7 @@ void Portal_RequestScreenCast(uint32_t *out_video_node,
 // --- THREADING CONTEXTS ---
 
 typedef struct EncoderThreadContext {
-  Queue *frame_queue; // Queue of VideoFrame* (must be copies)
+  RingBuffer *frame_queue; // Ring buffer of VideoFrame* (bounded, pre-allocated)
   VideoFormat vfmt;
   MemoryArena *arena;
 
@@ -79,8 +79,8 @@ typedef struct AudioThreadContext {
 
 typedef struct NetReceiverContext {
   NetworkContext *net;
-  Queue *video_queue;
-  Queue *audio_queue;
+  RingBuffer *video_queue;
+  RingBuffer *audio_queue;
 
   // Shared State
   StreamMetadata *stream_meta;
@@ -93,7 +93,7 @@ typedef struct NetReceiverContext {
 } NetReceiverContext;
 
 typedef struct DecoderThreadContext {
-  Queue *video_queue;
+  RingBuffer *video_queue;
   DecoderContext *decoder;
   VideoFrame *out_frame;
   OS_Mutex *frame_mutex;
@@ -107,7 +107,7 @@ typedef struct DecoderThreadContext {
 } DecoderThreadContext;
 
 typedef struct AudioDecoderThreadContext {
-  Queue *audio_queue;
+  RingBuffer *audio_queue;
   AudioDecoder *decoder;
   AudioPlaybackContext *playback;
 
@@ -131,6 +131,25 @@ static void Net_SendPacketCallback(void *user_data, void *packet_data,
   Net_Send(d->net, d->dest_ip, d->dest_port, packet_data, packet_size);
 }
 
+// --- DROP CALLBACKS FOR RING BUFFER ---
+// Called when ring buffer is full and needs to drop old frames
+
+static void DropVideoFrame(void *data) {
+  VideoFrame *frame = (VideoFrame *)data;
+  if (frame) {
+    if (frame->data[0]) free(frame->data[0]);
+    free(frame);
+  }
+}
+
+static void DropEncodedPacket(void *data) {
+  EncodedPacket *pkt = (EncodedPacket *)data;
+  if (pkt) {
+    if (pkt->data) free(pkt->data);
+    free(pkt);
+  }
+}
+
 // --- THREAD PROCEDURES ---
 
 static void EncoderThreadProc(void *data) {
@@ -147,7 +166,7 @@ static void EncoderThreadProc(void *data) {
   ArenaInit(&packet_arena, 16 * 1024 * 1024);
 
   while (ctx->running) {
-    VideoFrame *frame = (VideoFrame *)Queue_Pop(ctx->frame_queue);
+    VideoFrame *frame = (VideoFrame *)RingBuffer_Pop(ctx->frame_queue);
     if (!frame)
       break; // Shutdown signal
 
@@ -207,7 +226,7 @@ static void EncoderThreadProc(void *data) {
 
   if (encoder)
     Codec_CloseEncoder(encoder);
-  Queue_Destroy(ctx->frame_queue);
+  // Note: frame_queue is owned by main thread, drained/destroyed there after join
   printf("EncoderThread: Finished\n");
 }
 
@@ -330,9 +349,9 @@ static void NetReceiverProc(void *data) {
         pkt->pts = (int64_t)peek_header->frame_id;
 
         if (packet_type == PACKET_TYPE_VIDEO) {
-          Queue_Push(ctx->video_queue, pkt);
+          RingBuffer_Push(ctx->video_queue, pkt, DropEncodedPacket);
         } else if (packet_type == PACKET_TYPE_AUDIO) {
-          Queue_Push(ctx->audio_queue, pkt);
+          RingBuffer_Push(ctx->audio_queue, pkt, DropEncodedPacket);
         } else {
           free(qdata);
           free(pkt);
@@ -350,7 +369,7 @@ static void DecoderThreadProc(void *data) {
   printf("DecoderThread: Started\n");
 
   while (ctx->running) {
-    EncodedPacket *pkt = (EncodedPacket *)Queue_Pop(ctx->video_queue);
+    EncodedPacket *pkt = (EncodedPacket *)RingBuffer_Pop(ctx->video_queue);
     if (!pkt)
       break;
 
@@ -399,7 +418,7 @@ static void AudioDecoderThreadProc(void *data) {
   printf("AudioDecoderThread: Started\n");
 
   while (ctx->running) {
-    EncodedPacket *pkt = (EncodedPacket *)Queue_Pop(ctx->audio_queue);
+    EncodedPacket *pkt = (EncodedPacket *)RingBuffer_Pop(ctx->audio_queue);
     if (!pkt)
       break;
 
@@ -565,7 +584,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
 
   // Start Encoder Thread
   EncoderThreadContext encoder_ctx = {0};
-  encoder_ctx.frame_queue = Queue_Create();
+  encoder_ctx.frame_queue = RingBuffer_Create(4);  // Small buffer, drop if encoder can't keep up
   encoder_ctx.vfmt = vfmt;
   encoder_ctx.arena = PushStruct(arena, MemoryArena);
   ArenaInit(encoder_ctx.arena, 32 * 1024 * 1024);
@@ -693,7 +712,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
       size_t data_size = frame->height * frame->linesize[0];
       qframe->data[0] = malloc(data_size);
       memcpy(qframe->data[0], frame->data[0], data_size);
-      Queue_Push(encoder_ctx.frame_queue, qframe);
+      RingBuffer_Push(encoder_ctx.frame_queue, qframe, DropVideoFrame);
     }
 
     // Status UI
@@ -708,13 +727,17 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   encoder_ctx.running = false;
   audio_ctx.running = false;
   
-  // Signal encoder queue to shutdown - unblocks encoder thread waiting on Queue_Pop
-  Queue_Shutdown(encoder_ctx.frame_queue);
+  // Signal encoder queue to shutdown - unblocks encoder thread waiting on RingBuffer_Pop
+  RingBuffer_Shutdown(encoder_ctx.frame_queue);
 
   OS_ThreadJoin(encoder_thread);
   OS_ThreadJoin(audio_thread);
 
   // Cleanup
+  // Drain any unprocessed frames from encoder queue
+  RingBuffer_Drain(encoder_ctx.frame_queue, DropVideoFrame);
+  RingBuffer_Destroy(encoder_ctx.frame_queue, NULL);
+  
   OS_MutexDestroy(viewer_mutex);
   OS_MutexDestroy(packetizer_mutex);
   if (audio_capture)
@@ -762,8 +785,8 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip,
   float current_mbps = 0.0f;
 
   // Threading Synchronization
-  Queue *video_queue = Queue_Create();
-  Queue *audio_queue = Queue_Create();
+  RingBuffer *video_queue = RingBuffer_Create(30);  // ~0.5s at 60fps, drops old frames
+  RingBuffer *audio_queue = RingBuffer_Create(20);  // ~0.4s audio buffer
   OS_Mutex *meta_mutex = OS_MutexCreate();
   OS_Mutex *stats_mutex = OS_MutexCreate();
   OS_Mutex *frame_mutex = OS_MutexCreate();
@@ -865,17 +888,17 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip,
   decoder_ctx.running = false;
   audio_decoder_ctx.running = false;
   
-  // Signal queues to shutdown - this unblocks threads waiting on Queue_Pop
-  Queue_Shutdown(video_queue);
-  Queue_Shutdown(audio_queue);
+  // Signal queues to shutdown - this unblocks threads waiting on RingBuffer_Pop
+  RingBuffer_Shutdown(video_queue);
+  RingBuffer_Shutdown(audio_queue);
 
   OS_ThreadJoin(net_thread);
   OS_ThreadJoin(decoder_thread);
   OS_ThreadJoin(audio_decoder_thread);
 
   // Cleanup queues (must be after threads are joined)
-  Queue_Destroy(video_queue);
-  Queue_Destroy(audio_queue);
+  RingBuffer_Destroy(video_queue, DropEncodedPacket);
+  RingBuffer_Destroy(audio_queue, DropEncodedPacket);
   
   // Cleanup other resources
   OS_MutexDestroy(meta_mutex);
@@ -940,12 +963,14 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config,
   // Initial Enumeration
   Audio_EnumerateNodes(&temp_arena, &node_list);
   full_list.nodes =
-      ArenaPush(&temp_arena, (node_list.count + 1) * sizeof(AudioNodeInfo));
-  full_list.count = node_list.count + 1;
+      ArenaPush(&temp_arena, (node_list.count + 2) * sizeof(AudioNodeInfo));
+  full_list.count = node_list.count + 2;
   full_list.nodes[0].id = 0;
   strcpy(full_list.nodes[0].name, "[All] System Audio");
+  full_list.nodes[1].id = 0xFFFFFFFF;
+  strcpy(full_list.nodes[1].name, "No Audio");
   for (int i = 0; i < node_list.count; i++) {
-    full_list.nodes[i + 1] = node_list.nodes[i];
+    full_list.nodes[i + 2] = node_list.nodes[i];
   }
 
   while (OS_ProcessEvents(window)) {
@@ -1080,13 +1105,15 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config,
         node_list.count = 0;
         Audio_EnumerateNodes(&temp_arena, &node_list);
 
-        full_list.nodes = ArenaPush(&temp_arena, (node_list.count + 1) *
+        full_list.nodes = ArenaPush(&temp_arena, (node_list.count + 2) *
                                                      sizeof(AudioNodeInfo));
-        full_list.count = node_list.count + 1;
+        full_list.count = node_list.count + 2;
         full_list.nodes[0].id = 0;
         strcpy(full_list.nodes[0].name, "[All] System Audio");
+        full_list.nodes[1].id = 0xFFFFFFFF;
+        strcpy(full_list.nodes[1].name, "No Audio");
         for (int i = 0; i < node_list.count; i++) {
-          full_list.nodes[i + 1] = node_list.nodes[i];
+          full_list.nodes[i + 2] = node_list.nodes[i];
         }
       }
       y += 65;

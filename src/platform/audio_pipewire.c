@@ -73,6 +73,10 @@ static const struct pw_stream_events capture_stream_events = {
 
 
 AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, uint32_t target_node_id) {
+    if (target_node_id == 0xFFFFFFFF) {
+        printf("Audio: No Audio selected. Skipping capture initialization.\n");
+        return NULL;
+    }
     AudioCaptureContext *ctx = PushStructZero(arena, AudioCaptureContext);
     ctx->arena = arena;
     
