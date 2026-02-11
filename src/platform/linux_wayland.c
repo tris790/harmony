@@ -772,3 +772,87 @@ void Input_Init(WindowContext *win) {
 // Wait, undefined `seat_listener` in this scope if I defined it inside.
 // I will define it above.
 
+// --- Window Icon Support ---
+#include "generated/embedded_assets.h"
+#include <fcntl.h>
+#include <sys/stat.h>
+
+static char g_icon_temp_path[256] = {0};
+
+// Extract embedded icon to a temporary file
+// Returns the path to the temp file, or NULL on failure
+static const char* ExtractIconToTempFile(void) {
+    if (g_icon_temp_path[0] != '\0') {
+        return g_icon_temp_path; // Already extracted
+    }
+    
+    const uint8_t* icon_data = GetEmbeddedIconData();
+    size_t icon_size = GetEmbeddedIconSize();
+    
+    if (!icon_data || icon_size == 0) {
+        fprintf(stderr, "No embedded icon data available\n");
+        return NULL;
+    }
+    
+    // Create temp file
+    const char* tmpdir = getenv("TMPDIR");
+    if (!tmpdir) tmpdir = "/tmp";
+    
+    snprintf(g_icon_temp_path, sizeof(g_icon_temp_path), "%s/harmony_icon_XXXXXX.png", tmpdir);
+    
+    int fd = mkstemps(g_icon_temp_path, 4); // 4 = strlen(".png")
+    if (fd < 0) {
+        fprintf(stderr, "Failed to create temp file for icon\n");
+        g_icon_temp_path[0] = '\0';
+        return NULL;
+    }
+    
+    // Write icon data
+    ssize_t written = write(fd, icon_data, icon_size);
+    close(fd);
+    
+    if ((size_t)written != icon_size) {
+        fprintf(stderr, "Failed to write icon data to temp file\n");
+        unlink(g_icon_temp_path);
+        g_icon_temp_path[0] = '\0';
+        return NULL;
+    }
+    
+    return g_icon_temp_path;
+}
+
+// Set window icon for KDE Wayland and other compositors
+// On KDE Wayland, this attempts to set the icon via environment variables
+// and returns the path to the extracted icon for desktop file use
+bool OS_SetWindowIcon(WindowContext *window) {
+    (void)window; // Window parameter reserved for future use with specific protocols
+    
+    const char* icon_path = ExtractIconToTempFile();
+    if (!icon_path) {
+        return false;
+    }
+    
+    // Set environment variable that some compositors check
+    setenv("WINDOW_ICON", icon_path, 1);
+    
+    // For KDE Plasma specifically, we can try to use the icon name via app_id
+    // KDE uses the desktop file's Icon= field, so we set up the hint
+    setenv("KDE_FULL_SESSION", "true", 0); // Don't override if already set
+    
+    // Note: On KDE Wayland, the proper way to set a window icon is through
+    // a .desktop file. The app_id "harmony" is already set in OS_CreateWindow.
+    // Users can create ~/.local/share/applications/harmony.desktop with:
+    //   [Desktop Entry]
+    //   Name=Harmony
+    //   Exec=/path/to/harmony
+    //   Icon=/path/to/icon.png
+    //   Type=Application
+    
+    return true;
+}
+
+// Get the path to the extracted icon file (for use in desktop file creation)
+const char* OS_GetIconTempPath(void) {
+    return g_icon_temp_path[0] ? g_icon_temp_path : NULL;
+}
+

@@ -1143,6 +1143,9 @@ int main(int argc, char **argv) {
   if (!window)
     return 1;
 
+  // Set window icon (extracts embedded icon to temp file for desktop integration)
+  OS_SetWindowIcon(window);
+
   // Initialize the renderer once for the entire application session
   Render_Init(&main_arena);
 

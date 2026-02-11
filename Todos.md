@@ -27,3 +27,5 @@ todos:
 - [x] add the framerate and potentially other useful metadata and render them in the viewer
 - [x] improve visual quality of streams. 1080p are a bit pixelated
 - [x] encrypt the stream
+- [x] update assets embedding to use assets/ directory and support app icon for kde wayland linux
+- [x] automate desktop file installation on build so user can launch from start menu

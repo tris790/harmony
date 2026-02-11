@@ -1,4 +1,5 @@
 #include "render_api.h"
+#include "../platform/generated/embedded_assets.h"
 #include <GLES2/gl2.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -266,19 +267,11 @@ static void InitUI() {
     // UI VBO (Dynamic)
     glGenBuffers(1, &ui_vbo);
     
-    // Font Loading
-    FILE* f = fopen("src/ui/default.ttf", "rb");
-    if (!f) {
-        fprintf(stderr, "Failed to open font file src/ui/default.ttf\n");
-        return;
-    }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    
-    unsigned char* ttf_buffer = (unsigned char*)ArenaPush(g_render_arena, size);
-    fread(ttf_buffer, 1, size, f);
-    fclose(f);
+    // Font Loading - Use embedded font data
+    // Copy embedded font data to arena for stb_truetype
+    size_t font_size = GetEmbeddedFontSize();
+    unsigned char* ttf_buffer = (unsigned char*)ArenaPush(g_render_arena, font_size);
+    memcpy(ttf_buffer, GetEmbeddedFontData(), font_size);
 
     int tex_w = 512;
     int tex_h = 512;

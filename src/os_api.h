@@ -48,6 +48,11 @@ bool OS_IsEnterPressed(void);
 
 void OS_SetFullscreen(WindowContext *window, bool fullscreen);
 
+// Window Icon (extracts embedded icon to temp file for desktop integration)
+// On KDE Wayland, this creates a temp icon file that can be used with desktop files
+bool OS_SetWindowIcon(WindowContext *window);
+const char* OS_GetIconTempPath(void);  // Returns path to extracted icon, or NULL
+
 // Cursor
 typedef enum {
     OS_CURSOR_ARROW,

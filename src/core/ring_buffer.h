@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <unistd.h>  // for usleep
 
 // Lock-free(ish) Ring Buffer for real-time streaming
 // Pre-allocated slots, bounded memory, overwrites old data when full
@@ -93,11 +94,19 @@ static inline void* RingBuffer_Pop(RingBuffer *rb) {
     // Spin until we have valid data (should be immediate after semaphore)
     void *data = NULL;
     while (!data) {
+        // Check shutdown flag in loop to avoid infinite spin during shutdown
+        if (atomic_load(&rb->shutdown)) {
+            return NULL;
+        }
+        
         size_t read_pos = atomic_load(&rb->read_idx);
         size_t write_pos = atomic_load(&rb->write_idx);
         
         if (read_pos >= write_pos) {
-            // Empty or race, retry
+            // Empty or race, retry after brief pause to avoid tight spin
+            // This can happen if RingBuffer_Shutdown posts the semaphore
+            // but there's no actual data in the buffer
+            usleep(1000);  // 1ms
             continue;
         }
         

@@ -1,1 +1,4 @@
 build/
+# Generated embedded assets (auto-generated at build time)
+src/platform/generated/embedded_assets.c
+src/platform/generated/embedded_assets.h

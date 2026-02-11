@@ -9,6 +9,7 @@ Harmony is a high-performance, handmade screen-sharing application for Linux (Wa
 - **Wayland Native**: Built from scratch for Wayland using XDG Desktop Portal for screencasting.
 - **Audio Support**: High-quality audio capture via PipeWire and encoding with Opus. Support desktop audio or specific applications.
 - **Configurable**: Persistent settings in ~/.config/harmony/config.txt.
+- **Desktop Integration**: Automatically installs to application menu on build.
 
 ## Requirements
 
@@ -25,14 +26,28 @@ Ensure you have the following development libraries installed:
 The project uses a simple shell script for building.
 
 ```bash
-# Build and run the application
+# Build the application
+./build.sh
+
 ./build.sh run
 ```
 
 ## How to Use
 
-1. **Launch**: Start the application by running `./build/harmony`.
-2. **Host**: In the UI, select "Host". A system dialog (XDG Portal) will appear to let you select a screen or window to share.
-3. **Connect**: Enter the IP address of the peer you wish to connect to.
-4. **Settings**: Use the in-app dropdowns to select audio sources and adjust streaming parameters like bitrate.
+### Method 1: Launch from Application Menu (Recommended)
+1. Build the application with `./build.sh`
+2. Open your application menu/start menu
+3. Search for "Harmony Screen Share"
+4. Launch the application
+
+The desktop entry includes quick actions:
+- **Start as Host**: Launch directly in host mode
+- **Start as Viewer**: Launch directly in viewer mode
+
+### Method 2: Command Line
+1. **Host**: Run `./build/harmony` or `./build/harmony host`
+2. **Viewer**: Run `./build/harmony viewer`
+3. In the UI, select "Host". A system dialog (XDG Portal) will appear to let you select a screen or window to share.
+4. Enter the IP address of the peer you wish to connect to.
+5. Use the in-app dropdowns to select audio sources and adjust streaming parameters like bitrate.
 
