@@ -596,16 +596,9 @@ void Audio_WritePlayback(AudioPlaybackContext *ctx, AudioFrame *frame) {
 
 void Audio_ClosePlayback(AudioPlaybackContext *ctx) {
     if (ctx) {
-        // Lock the mutex before stopping the thread to ensure the callback
-        // is not in the middle of executing when we start destroying resources.
-        // This prevents the "futex facility returned an unexpected error code"
-        // caused by destroying a mutex that is being held by the audio thread.
-        pthread_mutex_lock(&ctx->mutex);
-        
+        // Stop joins the loop thread. Leave the mutex unlocked so an in-flight
+        // playback callback can acquire it and finish before the join returns.
         if (ctx->thread_loop) pw_thread_loop_stop(ctx->thread_loop);
-        
-        // Now safe to unlock and destroy - the audio thread is stopped
-        pthread_mutex_unlock(&ctx->mutex);
         
         if (ctx->stream) pw_stream_destroy(ctx->stream);
         if (ctx->core) pw_core_disconnect(ctx->core);

@@ -1,10 +1,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <time.h>
 #include "../src/memory_arena.h"
 #include "../src/codec_api.h"
 #include "../src/codec/codec_ffmpeg.c"
 #include "../src/codec/codec_ffmpeg_decode.c"
+
+// The standalone codec test does not link the Wayland time implementation.
+double OS_GetTime(void) {
+    struct timespec ts;
+    assert(clock_gettime(CLOCK_MONOTONIC, &ts) == 0);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
 
 // Helper: Fill frame with dummy RGBA data (moving box)
 void FillTestFrame(VideoFrame *frame, int frame_idx) {
@@ -90,14 +98,18 @@ int main() {
             Codec_DecodePacket(decoder, &pkt, &decoded_frame);
 
             if (decoded_frame.data[0] != NULL) {
-                // Basic verification: check if there's at least some non-black pixels
-                // (Since it's lossy H.264, we don't expect exact match, but definitely not zero)
+                // Decoder output is YUV420P. Scan the luma plane using its stride,
+                // rather than reading width * height * 4 bytes as if it were RGBA.
                 int non_zero = 0;
                 uint8_t *p = decoded_frame.data[0];
-                for (int j = 0; j < decoded_frame.height * decoded_frame.width * 4; ++j) {
-                    if (p[j] > 0) {
-                        non_zero = 1;
-                        break;
+                assert(decoded_frame.width == format.width);
+                assert(decoded_frame.height == format.height);
+                for (int y = 0; y < decoded_frame.height && !non_zero; ++y) {
+                    for (int x = 0; x < decoded_frame.width; ++x) {
+                        if (p[y * decoded_frame.linesize[0] + x] > 128) {
+                            non_zero = 1;
+                            break;
+                        }
                     }
                 }
                 
@@ -113,6 +125,9 @@ int main() {
 
     printf("Test Finished. %d/%d frames successfully round-tripped.\n", success_count, frame_count);
 
-    if (success_count > 0) return 0;
-    return 1;
+    Codec_CloseDecoder(decoder);
+    Codec_CloseEncoder(encoder);
+    munmap(packet_arena.base, packet_arena.size);
+    munmap(main_arena.base, main_arena.size);
+    return success_count == frame_count ? 0 : 1;
 }

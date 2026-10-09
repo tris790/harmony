@@ -22,9 +22,15 @@ static void ArenaInit(MemoryArena *arena, size_t size) {
 }
 
 static void *ArenaPush(MemoryArena *arena, size_t size) {
-    assert((arena->used + size) <= arena->size);
-    void *result = arena->base + arena->used;
-    arena->used += size;
+    // Byte buffers (fonts, clipboard text, packets) can leave an unaligned cursor.
+    // Subsequent structs, especially those containing pthread mutexes, must be aligned.
+    const size_t alignment = _Alignof(max_align_t);
+    assert(arena->used <= arena->size);
+    size_t padding = (alignment - (uintptr_t)(arena->base + arena->used) % alignment) % alignment;
+    assert(padding <= arena->size - arena->used);
+    assert(size <= arena->size - arena->used - padding);
+    void *result = arena->base + arena->used + padding;
+    arena->used += padding + size;
     return result;
 }
 

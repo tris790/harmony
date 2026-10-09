@@ -72,10 +72,12 @@ if [ $BUILD_STATUS -eq 0 ]; then
         TEST_FLAGS="$FLAGS -fprofile-arcs -ftest-coverage"
         
         echo "Running tests..."
-        gcc $TEST_FLAGS $INCLUDES tests/test_codec_runner.c -o build/test_codec $LIBS 2>/dev/null && ./build/test_codec
-        gcc $TEST_FLAGS $INCLUDES tests/test_net_runner.c -o build/test_net $LIBS 2>/dev/null && ./build/test_net
+        gcc $TEST_FLAGS $INCLUDES tests/test_audio_playback_runner.c -o build/test_audio_playback $LIBS && ./build/test_audio_playback || exit 1
+        gcc $TEST_FLAGS $INCLUDES tests/test_codec_runner.c -o build/test_codec $LIBS && ./build/test_codec || exit 1
+        gcc $TEST_FLAGS $INCLUDES tests/test_net_runner.c -o build/test_net $LIBS && ./build/test_net || exit 1
         echo "✓ Tests complete"
     fi
 else
     echo "✗ Build failed"
+    exit 1
 fi
