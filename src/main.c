@@ -33,10 +33,8 @@ typedef struct EncoderThreadContext {
 
   // Communication with Network
   NetworkContext *net;
-  char viewer_ip[16];
-  int viewer_port;
-  bool has_viewer;
-  OS_Mutex *viewer_mutex;
+  struct WatcherList *watchers;
+  OS_Mutex *watcher_mutex;
   OS_Mutex *packetizer_mutex;
 
   // WebSocket
@@ -57,10 +55,8 @@ typedef struct AudioThreadContext {
 
   // Communication with Network
   NetworkContext *net;
-  char viewer_ip[16];
-  int viewer_port;
-  bool has_viewer;
-  OS_Mutex *viewer_mutex;
+  struct WatcherList *watchers;
+  OS_Mutex *watcher_mutex;
 
   // WebSocket
   WebSocketContext *ws;
@@ -118,6 +114,25 @@ typedef struct AudioDecoderThreadContext {
   bool running;
 } AudioDecoderThreadContext;
 
+#define MAX_UDP_WATCHERS 16
+#define WATCHER_TIMEOUT_SECONDS 3.0
+
+typedef struct UDPWatcher {
+  char ip[16];
+  int port;
+  double last_seen_time;
+  bool active;
+} UDPWatcher;
+
+typedef struct WatcherList {
+  UDPWatcher entries[MAX_UDP_WATCHERS];
+} WatcherList;
+
+typedef struct WatcherSnapshot {
+  UDPWatcher entries[MAX_UDP_WATCHERS];
+  int count;
+} WatcherSnapshot;
+
 // --- HELPER TYPES ---
 typedef struct NetCallbackData {
   NetworkContext *net;
@@ -125,10 +140,79 @@ typedef struct NetCallbackData {
   int dest_port;
 } NetCallbackData;
 
+typedef struct BroadcastCallbackData {
+  NetworkContext *net;
+  WatcherSnapshot *snapshot;
+} BroadcastCallbackData;
+
 static void Net_SendPacketCallback(void *user_data, void *packet_data,
                                    size_t packet_size) {
   NetCallbackData *d = (NetCallbackData *)user_data;
   Net_Send(d->net, d->dest_ip, d->dest_port, packet_data, packet_size);
+}
+
+static void Net_BroadcastPacketCallback(void *user_data, void *packet_data,
+                                        size_t packet_size) {
+  BroadcastCallbackData *d = (BroadcastCallbackData *)user_data;
+  for (int i = 0; i < d->snapshot->count; i++) {
+    UDPWatcher *watcher = &d->snapshot->entries[i];
+    Net_Send(d->net, watcher->ip, watcher->port, packet_data, packet_size);
+  }
+}
+
+static void Watchers_PruneExpired(WatcherList *watchers, double now) {
+  for (int i = 0; i < MAX_UDP_WATCHERS; i++) {
+    UDPWatcher *watcher = &watchers->entries[i];
+    if (!watcher->active)
+      continue;
+    if ((now - watcher->last_seen_time) > WATCHER_TIMEOUT_SECONDS) {
+      printf("Host: Viewer expired %s:%d\n", watcher->ip, watcher->port);
+      watcher->active = false;
+    }
+  }
+}
+
+static void Watchers_CopySnapshot(const WatcherList *watchers,
+                                  WatcherSnapshot *snapshot) {
+  snapshot->count = 0;
+  for (int i = 0; i < MAX_UDP_WATCHERS; i++) {
+    if (!watchers->entries[i].active)
+      continue;
+    snapshot->entries[snapshot->count++] = watchers->entries[i];
+  }
+}
+
+static bool Watchers_Touch(WatcherList *watchers, const char *ip, int port,
+                           double now, bool *out_added) {
+  UDPWatcher *free_slot = NULL;
+
+  for (int i = 0; i < MAX_UDP_WATCHERS; i++) {
+    UDPWatcher *watcher = &watchers->entries[i];
+    if (!watcher->active) {
+      if (!free_slot)
+        free_slot = watcher;
+      continue;
+    }
+
+    if (watcher->port == port && strcmp(watcher->ip, ip) == 0) {
+      watcher->last_seen_time = now;
+      if (out_added)
+        *out_added = false;
+      return true;
+    }
+  }
+
+  if (!free_slot)
+    return false;
+
+  strncpy(free_slot->ip, ip, sizeof(free_slot->ip) - 1);
+  free_slot->ip[sizeof(free_slot->ip) - 1] = '\0';
+  free_slot->port = port;
+  free_slot->last_seen_time = now;
+  free_slot->active = true;
+  if (out_added)
+    *out_added = true;
+  return true;
 }
 
 // --- DROP CALLBACKS FOR RING BUFFER ---
@@ -189,6 +273,7 @@ static void EncoderThreadProc(void *data) {
       Codec_EncodeFrame(encoder, frame, &packet_arena, &pkt);
 
       if (pkt.size > 0) {
+        WatcherSnapshot watcher_snapshot = {0};
         OS_MutexLock(ctx->packetizer_mutex);
         uint32_t current_frame_id = ctx->packetizer.frame_id_counter + 1;
 
@@ -200,16 +285,16 @@ static void EncoderThreadProc(void *data) {
           AES_CTR_Xcrypt(&ctx->aes_ctx, iv, pkt.data, pkt.size);
         }
 
-        // Send UDP if viewer exists
-        OS_MutexLock(ctx->viewer_mutex);
-        if (ctx->has_viewer) {
-          NetCallbackData net_cb = {.net = ctx->net,
-                                    .dest_ip = ctx->viewer_ip,
-                                    .dest_port = ctx->viewer_port};
+        OS_MutexLock(ctx->watcher_mutex);
+        Watchers_CopySnapshot(ctx->watchers, &watcher_snapshot);
+        OS_MutexUnlock(ctx->watcher_mutex);
+
+        if (watcher_snapshot.count > 0) {
+          BroadcastCallbackData broadcast_cb = {.net = ctx->net,
+                                                .snapshot = &watcher_snapshot};
           Protocol_SendFrame(&ctx->packetizer, pkt.data, pkt.size,
-                             Net_SendPacketCallback, &net_cb);
+                             Net_BroadcastPacketCallback, &broadcast_cb);
         }
-        OS_MutexUnlock(ctx->viewer_mutex);
         OS_MutexUnlock(ctx->packetizer_mutex);
 
         // Broadcast WebSocket
@@ -246,6 +331,7 @@ static void AudioThreadProc(void *data) {
       Audio_Encode(ctx->encoder, aframe, &encoded_audio);
 
       if (encoded_audio.size > 0) {
+        WatcherSnapshot watcher_snapshot = {0};
         OS_MutexLock(ctx->packetizer_mutex);
         uint32_t current_audio_id = ctx->packetizer->frame_id_counter + 1;
 
@@ -258,16 +344,17 @@ static void AudioThreadProc(void *data) {
                          encoded_audio.size);
         }
 
-        OS_MutexLock(ctx->viewer_mutex);
-        if (ctx->has_viewer) {
-          NetCallbackData net_cb = {.net = ctx->net,
-                                    .dest_ip = ctx->viewer_ip,
-                                    .dest_port = ctx->viewer_port};
+        OS_MutexLock(ctx->watcher_mutex);
+        Watchers_CopySnapshot(ctx->watchers, &watcher_snapshot);
+        OS_MutexUnlock(ctx->watcher_mutex);
+
+        if (watcher_snapshot.count > 0) {
+          BroadcastCallbackData broadcast_cb = {.net = ctx->net,
+                                                .snapshot = &watcher_snapshot};
           Protocol_SendAudio(ctx->packetizer, encoded_audio.data,
-                             encoded_audio.size, Net_SendPacketCallback,
-                             &net_cb);
+                             encoded_audio.size, Net_BroadcastPacketCallback,
+                             &broadcast_cb);
         }
-        OS_MutexUnlock(ctx->viewer_mutex);
 
         WS_Broadcast(ctx->ws, PACKET_TYPE_AUDIO, current_audio_id,
                      encoded_audio.data, encoded_audio.size);
@@ -530,7 +617,7 @@ static void UI_DrawMetadataTooltip(WindowContext *window,
 }
 
 int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
-            bool verbose, uint32_t audio_node_id, const char *encoder_preset,
+            bool verbose, const AudioNodeInfo *audio_node, const char *encoder_preset,
             const char *password, const PersistentConfig *config) {
   (void)verbose;
   printf("Starting Multi-Threaded HOST Mode...\n");
@@ -546,13 +633,13 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
     return 1;
   }
   printf("Got Video Node ID: %u, Audio Node ID: %u\n", video_node_id,
-         audio_node_id);
+         audio_node->id);
 
   CaptureContext *capture = Capture_Init(arena, video_node_id);
   if (!capture)
     return 1;
 
-  AudioCaptureContext *audio_capture = Audio_InitCapture(arena, audio_node_id);
+  AudioCaptureContext *audio_capture = Audio_InitCapture(arena, audio_node);
   AudioEncoder *audio_encoder = Audio_InitEncoder(arena);
 
   // Main thread Network Setup (shared by worker threads)
@@ -579,7 +666,8 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   }
 
   // Threading Synchronization
-  OS_Mutex *viewer_mutex = OS_MutexCreate();
+  WatcherList watchers = {0};
+  OS_Mutex *watcher_mutex = OS_MutexCreate();
   OS_Mutex *packetizer_mutex = OS_MutexCreate();
 
   // Start Encoder Thread
@@ -589,10 +677,8 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   encoder_ctx.arena = PushStruct(arena, MemoryArena);
   ArenaInit(encoder_ctx.arena, 32 * 1024 * 1024);
   encoder_ctx.net = net;
-  strncpy(encoder_ctx.viewer_ip, target_ip, 15);
-  encoder_ctx.viewer_port = 9999;
-  encoder_ctx.has_viewer = false;
-  encoder_ctx.viewer_mutex = viewer_mutex;
+  encoder_ctx.watchers = &watchers;
+  encoder_ctx.watcher_mutex = watcher_mutex;
   encoder_ctx.packetizer_mutex = packetizer_mutex;
   encoder_ctx.ws = ws;
   encoder_ctx.encryption_enabled = encryption_enabled;
@@ -606,10 +692,8 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   audio_ctx.capture = audio_capture;
   audio_ctx.encoder = audio_encoder;
   audio_ctx.net = net;
-  strncpy(audio_ctx.viewer_ip, target_ip, 15);
-  audio_ctx.viewer_port = 9999;
-  audio_ctx.has_viewer = false;
-  audio_ctx.viewer_mutex = viewer_mutex;
+  audio_ctx.watchers = &watchers;
+  audio_ctx.watcher_mutex = watcher_mutex;
   audio_ctx.ws = ws;
   audio_ctx.encryption_enabled = encryption_enabled;
   if (encryption_enabled)
@@ -648,11 +732,28 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
     elapsed_time += 1.0f / (float)vfmt.fps;
     time_since_host_punch += 1.0f / (float)vfmt.fps;
 
+    double now = OS_GetTime();
+    OS_MutexLock(watcher_mutex);
+    Watchers_PruneExpired(&watchers, now);
+    OS_MutexUnlock(watcher_mutex);
+
     // Periodic Punches (Main Thread)
     if (time_since_host_punch >= HOST_PUNCH_INTERVAL) {
+      WatcherSnapshot watcher_snapshot = {0};
+      OS_MutexLock(watcher_mutex);
+      Watchers_CopySnapshot(&watchers, &watcher_snapshot);
+      OS_MutexUnlock(watcher_mutex);
+
       OS_MutexLock(packetizer_mutex);
-      Protocol_SendPunch(&encoder_ctx.packetizer, Net_SendPacketCallback,
-                         &(NetCallbackData){net, target_ip, 9999});
+      if (watcher_snapshot.count > 0) {
+        BroadcastCallbackData broadcast_cb = {.net = net,
+                                              .snapshot = &watcher_snapshot};
+        Protocol_SendPunch(&encoder_ctx.packetizer, Net_BroadcastPacketCallback,
+                           &broadcast_cb);
+      } else {
+        Protocol_SendPunch(&encoder_ctx.packetizer, Net_SendPacketCallback,
+                           &(NetCallbackData){net, target_ip, 9999});
+      }
       OS_MutexUnlock(packetizer_mutex);
       time_since_host_punch = 0.0f;
     }
@@ -668,17 +769,31 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
         if (n >= (int)sizeof(PacketHeader)) {
           PacketHeader *hdr = (PacketHeader *)punch_buf;
           if (hdr->packet_type == PACKET_TYPE_PUNCH) {
-            OS_MutexLock(viewer_mutex);
-            if (!encoder_ctx.has_viewer ||
-                strcmp(encoder_ctx.viewer_ip, incoming_ip) != 0) {
-              strncpy(encoder_ctx.viewer_ip, incoming_ip, 15);
-              strncpy(audio_ctx.viewer_ip, incoming_ip, 15);
-              encoder_ctx.has_viewer = true;
-              audio_ctx.has_viewer = true;
+            double now = OS_GetTime();
+            bool added = false;
+            bool tracked = false;
+
+            OS_MutexLock(watcher_mutex);
+            Watchers_PruneExpired(&watchers, now);
+            tracked =
+                Watchers_Touch(&watchers, incoming_ip, incoming_port, now, &added);
+            OS_MutexUnlock(watcher_mutex);
+
+            if (added) {
               printf("Host: Viewer connected from %s:%d\n", incoming_ip,
                      incoming_port);
+            } else if (!tracked) {
+              printf("Host: Watcher limit reached, dropping %s:%d\n",
+                     incoming_ip, incoming_port);
             }
-            OS_MutexUnlock(viewer_mutex);
+
+            if (tracked) {
+              OS_MutexLock(packetizer_mutex);
+              Protocol_SendPunch(&encoder_ctx.packetizer, Net_SendPacketCallback,
+                                 &(NetCallbackData){net, incoming_ip,
+                                                    incoming_port});
+              OS_MutexUnlock(packetizer_mutex);
+            }
           }
         }
       }
@@ -692,17 +807,19 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
 
       // Send Metadata periodically
       if (frame_count % vfmt.fps == 0) {
+        WatcherSnapshot watcher_snapshot = {0};
         metadata.screen_width = frame->width;
         metadata.screen_height = frame->height;
+        OS_MutexLock(watcher_mutex);
+        Watchers_CopySnapshot(&watchers, &watcher_snapshot);
+        OS_MutexUnlock(watcher_mutex);
         OS_MutexLock(packetizer_mutex);
-        OS_MutexLock(viewer_mutex);
-        if (encoder_ctx.has_viewer) {
-          NetCallbackData net_cb = {
-              .net = net, .dest_ip = encoder_ctx.viewer_ip, .dest_port = 9999};
+        if (watcher_snapshot.count > 0) {
+          BroadcastCallbackData broadcast_cb = {.net = net,
+                                                .snapshot = &watcher_snapshot};
           Protocol_SendMetadata(&encoder_ctx.packetizer, &metadata,
-                                Net_SendPacketCallback, &net_cb);
+                                Net_BroadcastPacketCallback, &broadcast_cb);
         }
-        OS_MutexUnlock(viewer_mutex);
         OS_MutexUnlock(packetizer_mutex);
       }
 
@@ -738,7 +855,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   RingBuffer_Drain(encoder_ctx.frame_queue, DropVideoFrame);
   RingBuffer_Destroy(encoder_ctx.frame_queue, NULL);
   
-  OS_MutexDestroy(viewer_mutex);
+  OS_MutexDestroy(watcher_mutex);
   OS_MutexDestroy(packetizer_mutex);
   if (audio_capture)
     Audio_CloseCapture(audio_capture);
@@ -924,6 +1041,7 @@ typedef struct AppConfig {
   char stream_password[64];
   uint32_t fps;
   uint32_t selected_audio_node_id;
+  AudioNodeInfo selected_audio_node; // Filled from the list when starting
   bool start_app;
 } AppConfig;
 
@@ -1124,6 +1242,15 @@ void RunMenu(MemoryArena *arena, WindowContext *window, AppConfig *config,
     UI_CenterNext(250);
     if (UI_Button(start_label, 0, y, 250, 40) || enter) {
       config->start_app = true;
+      // Never default to system audio if the selection vanished from the list
+      memset(&config->selected_audio_node, 0, sizeof(config->selected_audio_node));
+      config->selected_audio_node.id = 0xFFFFFFFF;
+      for (int i = 0; i < full_list.count; i++) {
+        if (full_list.nodes[i].id == config->selected_audio_node_id) {
+          config->selected_audio_node = full_list.nodes[i];
+          break;
+        }
+      }
       UI_EndFrame();
       OS_SwapBuffers(window);
       return; // Exit Menu
@@ -1189,7 +1316,7 @@ int main(int argc, char **argv) {
       if (config.is_host) {
         result =
             RunHost(&main_arena, window, config.target_ip, config.verbose,
-                    config.selected_audio_node_id, saved_config.encoder_preset,
+                    &config.selected_audio_node, saved_config.encoder_preset,
                     config.stream_password, &saved_config);
       } else {
         result = RunViewer(&main_arena, window, config.target_ip,

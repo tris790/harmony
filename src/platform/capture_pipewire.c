@@ -190,7 +190,10 @@ CaptureContext* Capture_Init(MemoryArena *arena, uint32_t node_id) {
 }
 
 void Capture_Poll(CaptureContext *ctx) {
-    pw_loop_iterate(pw_main_loop_get_loop(ctx->loop), 0);
+    struct pw_loop *loop = pw_main_loop_get_loop(ctx->loop);
+    pw_loop_enter(loop);
+    pw_loop_iterate(loop, 0);
+    pw_loop_leave(loop);
 }
 
 struct VideoFrame* Capture_GetFrame(CaptureContext *ctx) {

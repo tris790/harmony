@@ -7,8 +7,11 @@
 #include <spa/pod/builder.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../audio_api.h"
+
+#define MAX_CAPTURE_CANDIDATES 32
 
 // --- Audio Capture Context ---
 struct AudioCaptureContext {
@@ -30,6 +33,24 @@ struct AudioCaptureContext {
     // Frame output
     AudioFrame current_frame;
     bool frame_ready;
+
+    // Target tracking: app streams get a new serial every time the app
+    // restarts, so we follow the target by name and re-link to new instances.
+    struct pw_registry *registry;
+    struct spa_hook registry_listener;
+    struct spa_hook core_listener;
+    bool follow_target;
+    bool target_is_app;
+    char match_name[128];
+    uint32_t target_serial;     // Serial the stream is currently targeting
+    uint32_t target_global_id;  // Registry id of the target, PW_ID_ANY if gone
+    int registry_sync_seq;
+    bool registry_synced;
+    struct {
+        uint32_t id;
+        uint32_t serial;
+    } candidates[MAX_CAPTURE_CANDIDATES];
+    int candidate_count;
 };
 
 // Capture stream callback - just buffer the samples
@@ -71,57 +92,52 @@ static const struct pw_stream_events capture_stream_events = {
     .process = capture_on_process,
 };
 
+// Name used to recognize the same source across restarts.
+// application.name is stable for apps (process.binary is useless for Wine
+// games, it's always wine64-preloader); sinks are matched by node.name.
+static const char *audio_match_name(const struct spa_dict *props, bool is_app) {
+    const char *name = NULL;
+    if (is_app) name = spa_dict_lookup(props, PW_KEY_APP_NAME);
+    if (!name) name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
+    return name;
+}
 
-AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, uint32_t target_node_id) {
-    if (target_node_id == 0xFFFFFFFF) {
-        printf("Audio: No Audio selected. Skipping capture initialization.\n");
-        return NULL;
+// (Re)create the capture stream linked to the node with the given serial.
+// Serial 0 captures the default sink monitor.
+static bool capture_create_stream(AudioCaptureContext *ctx, uint32_t serial) {
+    if (ctx->stream) {
+        pw_stream_destroy(ctx->stream);
+        ctx->stream = NULL;
     }
-    AudioCaptureContext *ctx = PushStructZero(arena, AudioCaptureContext);
-    ctx->arena = arena;
-    
-    // Ring buffer: 1 second of audio
-    ctx->buffer_size = AUDIO_SAMPLE_RATE * AUDIO_CHANNELS;
-    ctx->buffer = ArenaPush(arena, ctx->buffer_size * sizeof(int16_t));
-    
-    pw_init(NULL, NULL);
-    
-    ctx->loop = pw_main_loop_new(NULL);
-    ctx->context = pw_context_new(pw_main_loop_get_loop(ctx->loop), NULL, 0);
-    ctx->core = pw_context_connect(ctx->context, NULL, 0);
-    
-    if (!ctx->core) {
-        fprintf(stderr, "Audio: Failed to connect to PipeWire\n");
-        return NULL;
-    }
-    
+
     struct pw_properties *props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Audio",
         PW_KEY_MEDIA_CATEGORY, "Capture",
         PW_KEY_MEDIA_ROLE, "Screen", // Changed from Music to Screen to avoid default Mic policies
         NULL
     );
-    
-    printf("Audio: InitCapture (v2-SerialCheck)\n");
 
-    if (target_node_id != 0) {
+    if (serial != 0) {
         // Target specific node (Portal/App)
-        char target_str[32];
-        snprintf(target_str, sizeof(target_str), "%u", target_node_id);
-        pw_properties_set(props, PW_KEY_TARGET_OBJECT, target_str);
-        
-        // Disable Autoconnect fallback behavior by hinting we want THIS object
-        // (Note: WirePlumber policy might still override, but this helps)
-        pw_properties_set(props, "stream.dont-reconnect", "true"); 
-        
-        printf("Audio: Targeting specific Node ID: %u\n", target_node_id);
+        pw_properties_setf(props, PW_KEY_TARGET_OBJECT, "%u", serial);
+
+        // Never let WirePlumber fall back to the default sink monitor when
+        // the target is missing or goes away (that would leak all desktop
+        // audio). linger keeps the stream alive and idle instead of having
+        // it destroyed, we re-target it ourselves when the app comes back.
+        pw_properties_set(props, "node.dont-fallback", "true");
+        pw_properties_set(props, "node.linger", "true");
+        if (!ctx->target_is_app) {
+            pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
+        }
+
+        printf("Audio: Targeting Node serial %u (%s)\n", serial, ctx->match_name);
     } else {
         // Capture System Monitor (Default Sink Monitor)
         pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
         printf("Audio: Targeting System Monitor\n");
     }
 
-    // Create capture stream
     ctx->stream = pw_stream_new_simple(
         pw_main_loop_get_loop(ctx->loop),
         "harmony-audio-capture",
@@ -129,7 +145,11 @@ AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, uint32_t target_node_
         &capture_stream_events,
         ctx
     );
-    
+    if (!ctx->stream) {
+        fprintf(stderr, "Audio: Failed to create capture stream\n");
+        return false;
+    }
+
     // Request S16LE stereo 48kHz
     const struct spa_pod *params[1];
     uint8_t buffer[1024];
@@ -152,7 +172,119 @@ AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, uint32_t target_node_
     
     if (ret < 0) {
         fprintf(stderr, "Audio: Stream connect failed: %s\n", strerror(-ret));
+        return false;
+    }
+
+    ctx->target_serial = serial;
+    return true;
+}
+
+static void capture_registry_global(void *data, uint32_t id,
+                                    uint32_t permissions, const char *type, uint32_t version,
+                                    const struct spa_dict *props) {
+    AudioCaptureContext *ctx = (AudioCaptureContext *)data;
+    (void)permissions;
+    (void)version;
+
+    if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0 || !props) return;
+
+    const char *media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+    if (!media_class) return;
+    const char *wanted_class = ctx->target_is_app ? "Stream/Output/Audio" : "Audio/Sink";
+    if (strcmp(media_class, wanted_class) != 0) return;
+
+    const char *name = audio_match_name(props, ctx->target_is_app);
+    if (!name || strcmp(name, ctx->match_name) != 0) return;
+
+    const char *serial_str = spa_dict_lookup(props, PW_KEY_OBJECT_SERIAL);
+    uint32_t serial = serial_str ? (uint32_t)strtoul(serial_str, NULL, 10) : id;
+
+    if (ctx->candidate_count < MAX_CAPTURE_CANDIDATES) {
+        ctx->candidates[ctx->candidate_count].id = id;
+        ctx->candidates[ctx->candidate_count].serial = serial;
+        ctx->candidate_count++;
+    }
+
+    if (serial == ctx->target_serial) {
+        ctx->target_global_id = id;
+    }
+}
+
+static void capture_registry_global_remove(void *data, uint32_t id) {
+    AudioCaptureContext *ctx = (AudioCaptureContext *)data;
+
+    for (int i = 0; i < ctx->candidate_count; i++) {
+        if (ctx->candidates[i].id == id) {
+            ctx->candidates[i] = ctx->candidates[--ctx->candidate_count];
+            break;
+        }
+    }
+
+    if (id == ctx->target_global_id) {
+        ctx->target_global_id = PW_ID_ANY;
+        printf("Audio: Source '%s' went away, waiting for it to come back\n", ctx->match_name);
+    }
+}
+
+static const struct pw_registry_events capture_registry_events = {
+    .version = PW_VERSION_REGISTRY_EVENTS,
+    .global = capture_registry_global,
+    .global_remove = capture_registry_global_remove,
+};
+
+static void capture_core_done(void *data, uint32_t id, int seq) {
+    AudioCaptureContext *ctx = (AudioCaptureContext *)data;
+    if (id == PW_ID_CORE && seq == ctx->registry_sync_seq) {
+        ctx->registry_synced = true;
+    }
+}
+
+static const struct pw_core_events capture_core_events = {
+    .version = PW_VERSION_CORE_EVENTS,
+    .done = capture_core_done,
+};
+
+AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, const AudioNodeInfo *target) {
+    uint32_t target_node_id = target ? target->id : 0;
+    if (target_node_id == 0xFFFFFFFF) {
+        printf("Audio: No Audio selected. Skipping capture initialization.\n");
         return NULL;
+    }
+    AudioCaptureContext *ctx = PushStructZero(arena, AudioCaptureContext);
+    ctx->arena = arena;
+    ctx->target_global_id = PW_ID_ANY;
+    
+    // Ring buffer: 1 second of audio
+    ctx->buffer_size = AUDIO_SAMPLE_RATE * AUDIO_CHANNELS;
+    ctx->buffer = ArenaPush(arena, ctx->buffer_size * sizeof(int16_t));
+    
+    pw_init(NULL, NULL);
+    
+    ctx->loop = pw_main_loop_new(NULL);
+    ctx->context = pw_context_new(pw_main_loop_get_loop(ctx->loop), NULL, 0);
+    ctx->core = pw_context_connect(ctx->context, NULL, 0);
+    
+    if (!ctx->core) {
+        fprintf(stderr, "Audio: Failed to connect to PipeWire\n");
+        return NULL;
+    }
+
+    if (target_node_id != 0) {
+        ctx->target_is_app = target->is_app;
+        snprintf(ctx->match_name, sizeof(ctx->match_name), "%s", target->match_name);
+        ctx->follow_target = ctx->match_name[0] != '\0';
+    }
+
+    if (!capture_create_stream(ctx, target_node_id)) {
+        return NULL;
+    }
+
+    if (ctx->follow_target) {
+        ctx->registry = pw_core_get_registry(ctx->core, PW_VERSION_REGISTRY, 0);
+        pw_registry_add_listener(ctx->registry, &ctx->registry_listener,
+                                 &capture_registry_events, ctx);
+        pw_core_add_listener(ctx->core, &ctx->core_listener, &capture_core_events, ctx);
+        ctx->registry_sync_seq = pw_core_sync(ctx->core, PW_ID_CORE, 0);
     }
     
     printf("Audio: Capture initialized (48kHz stereo S16LE)\n");
@@ -161,7 +293,24 @@ AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, uint32_t target_node_
 
 void Audio_PollCapture(AudioCaptureContext *ctx) {
     if (ctx && ctx->loop) {
-        pw_loop_iterate(pw_main_loop_get_loop(ctx->loop), 0);
+        // Polled from the audio worker thread: enter/leave so the loop lock is
+        // released afterwards, otherwise pw_stream_destroy() on the main thread
+        // deadlocks once the worker has exited while still owning it.
+        struct pw_loop *loop = pw_main_loop_get_loop(ctx->loop);
+        pw_loop_enter(loop);
+        pw_loop_iterate(loop, 0);
+
+        // Target is gone (app closed or restarted): switch to another
+        // instance of the same app as soon as one shows up. Wait for the
+        // initial registry dump so we don't jump away from a target that
+        // simply hasn't been announced yet.
+        if (ctx->follow_target && ctx->registry_synced &&
+            ctx->target_global_id == PW_ID_ANY && ctx->candidate_count > 0) {
+            printf("Audio: Source '%s' is back, re-linking\n", ctx->match_name);
+            ctx->target_global_id = ctx->candidates[0].id;
+            capture_create_stream(ctx, ctx->candidates[0].serial);
+        }
+        pw_loop_leave(loop);
     }
 }
 
@@ -250,6 +399,9 @@ static void registry_event_global(void *data, uint32_t id,
         
         const char *serial_str = spa_dict_lookup(props, PW_KEY_OBJECT_SERIAL);
         node->id = serial_str ? (uint32_t)atoi(serial_str) : id;
+        node->is_app = is_app;
+        const char *match_name = audio_match_name(props, is_app);
+        if (match_name) snprintf(node->match_name, sizeof(node->match_name), "%s", match_name);
         
         // Set a basic fallback name immediately (will be improved by node_event_info)
         const char *app_name = spa_dict_lookup(props, PW_KEY_APP_NAME);
@@ -399,6 +551,7 @@ AudioFrame* Audio_GetCapturedFrame(AudioCaptureContext *ctx) {
 void Audio_CloseCapture(AudioCaptureContext *ctx) {
     if (ctx) {
         if (ctx->stream) pw_stream_destroy(ctx->stream);
+        if (ctx->registry) pw_proxy_destroy((struct pw_proxy*)ctx->registry);
         if (ctx->core) pw_core_disconnect(ctx->core);
         if (ctx->context) pw_context_destroy(ctx->context);
         if (ctx->loop) pw_main_loop_destroy(ctx->loop);

@@ -25,8 +25,10 @@ typedef struct EncodedAudio {
 
 // --- Node Enumeration ---
 typedef struct AudioNodeInfo {
-    uint32_t id;
-    char name[128];
+    uint32_t id;            // object.serial (0 = system audio, 0xFFFFFFFF = none)
+    char name[128];         // Display label
+    char match_name[128];   // Stable name used to find the source again after it restarts
+    bool is_app;            // App stream (vs. output device)
 } AudioNodeInfo;
 
 typedef struct AudioNodeList {
@@ -42,7 +44,10 @@ void Audio_EnumerateNodes(MemoryArena *arena, AudioNodeList *out_list);
 // --- Audio Capture (Host) ---
 typedef struct AudioCaptureContext AudioCaptureContext;
 
-AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, uint32_t target_node_id);
+// target NULL or id 0 captures the default sink monitor. App/device targets are
+// followed by match_name: if the source disappears the stream goes silent (it
+// never falls back to desktop audio) and re-links when the source reappears.
+AudioCaptureContext* Audio_InitCapture(MemoryArena *arena, const AudioNodeInfo *target);
 void Audio_PollCapture(AudioCaptureContext *ctx);
 AudioFrame* Audio_GetCapturedFrame(AudioCaptureContext *ctx);
 void Audio_CloseCapture(AudioCaptureContext *ctx);
