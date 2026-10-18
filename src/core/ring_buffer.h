@@ -6,9 +6,8 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <stdbool.h>
-#include <unistd.h>  // for usleep
 
-// Lock-free(ish) Ring Buffer for real-time streaming
+// Bounded ring buffer for real-time streaming.
 // Pre-allocated slots, bounded memory, overwrites old data when full
 
 typedef struct RingSlot {
@@ -24,7 +23,7 @@ typedef struct RingBuffer {
     atomic_size_t write_idx;
     atomic_size_t read_idx;
     
-    OS_Mutex *mutex;        // Protects writes (needed for drop callback)
+    OS_Mutex *mutex;        // Protects slots and transfers ownership to consumers
     OS_Semaphore *sem;      // Signals consumer
     atomic_bool shutdown;
 } RingBuffer;
@@ -45,11 +44,13 @@ static inline RingBuffer* RingBuffer_Create(size_t capacity) {
 }
 
 // Push data. If full, drops oldest item and calls drop_fn if provided.
-// Returns true if data was added, false if dropped (only happens if drop_fn is NULL and full)
+// On false (full without drop_fn, or shutdown), the caller still owns data.
 static inline bool RingBuffer_Push(RingBuffer *rb, void *data, void (*drop_fn)(void*)) {
-    if (atomic_load(&rb->shutdown)) return false;
-    
     OS_MutexLock(rb->mutex);
+    if (atomic_load(&rb->shutdown)) {
+        OS_MutexUnlock(rb->mutex);
+        return false;
+    }
     
     size_t write_pos = atomic_load(&rb->write_idx) % rb->capacity;
     size_t read_pos = atomic_load(&rb->read_idx);
@@ -76,8 +77,9 @@ static inline bool RingBuffer_Push(RingBuffer *rb, void *data, void (*drop_fn)(v
     rb->slots[write_pos].data = data;
     atomic_fetch_add(&rb->write_idx, 1);
     
+    // Replacing an old item does not add another item to wake a consumer for.
+    if (!is_full) OS_SemaphorePost(rb->sem);
     OS_MutexUnlock(rb->mutex);
-    OS_SemaphorePost(rb->sem);
     
     return true;
 }
@@ -85,17 +87,11 @@ static inline bool RingBuffer_Push(RingBuffer *rb, void *data, void (*drop_fn)(v
 // Pop data. Blocks until available or shutdown.
 // Returns NULL on shutdown.
 static inline void* RingBuffer_Pop(RingBuffer *rb) {
-    OS_SemaphoreWait(rb->sem);
-    
-    if (atomic_load(&rb->shutdown)) {
-        return NULL;
-    }
-    
-    // Spin until we have valid data (should be immediate after semaphore)
-    void *data = NULL;
-    while (!data) {
-        // Check shutdown flag in loop to avoid infinite spin during shutdown
+    for (;;) {
+        OS_SemaphoreWait(rb->sem);
+        OS_MutexLock(rb->mutex);
         if (atomic_load(&rb->shutdown)) {
+            OS_MutexUnlock(rb->mutex);
             return NULL;
         }
         
@@ -103,30 +99,29 @@ static inline void* RingBuffer_Pop(RingBuffer *rb) {
         size_t write_pos = atomic_load(&rb->write_idx);
         
         if (read_pos >= write_pos) {
-            // Empty or race, retry after brief pause to avoid tight spin
-            // This can happen if RingBuffer_Shutdown posts the semaphore
-            // but there's no actual data in the buffer
-            usleep(1000);  // 1ms
+            // TryPop may have consumed the item associated with this wakeup.
+            OS_MutexUnlock(rb->mutex);
             continue;
         }
         
         size_t slot_idx = read_pos % rb->capacity;
-        data = rb->slots[slot_idx].data;
+        void *data = rb->slots[slot_idx].data;
         rb->slots[slot_idx].data = NULL;  // Clear slot
         
         atomic_fetch_add(&rb->read_idx, 1);
-        break;
+        OS_MutexUnlock(rb->mutex);
+        return data;
     }
-    
-    return data;
 }
 
 // Non-blocking pop. Returns NULL if empty.
 static inline void* RingBuffer_TryPop(RingBuffer *rb) {
+    OS_MutexLock(rb->mutex);
     size_t read_pos = atomic_load(&rb->read_idx);
     size_t write_pos = atomic_load(&rb->write_idx);
     
     if (read_pos >= write_pos) {
+        OS_MutexUnlock(rb->mutex);
         return NULL;  // Empty
     }
     
@@ -136,18 +131,23 @@ static inline void* RingBuffer_TryPop(RingBuffer *rb) {
         rb->slots[slot_idx].data = NULL;
         atomic_fetch_add(&rb->read_idx, 1);
     }
+    OS_MutexUnlock(rb->mutex);
     return data;
 }
 
 static inline size_t RingBuffer_Count(RingBuffer *rb) {
+    OS_MutexLock(rb->mutex);
     size_t write_pos = atomic_load(&rb->write_idx);
     size_t read_pos = atomic_load(&rb->read_idx);
+    OS_MutexUnlock(rb->mutex);
     return (write_pos > read_pos) ? (write_pos - read_pos) : 0;
 }
 
 static inline void RingBuffer_Shutdown(RingBuffer *rb) {
     if (!rb) return;
+    OS_MutexLock(rb->mutex);
     atomic_store(&rb->shutdown, true);
+    OS_MutexUnlock(rb->mutex);
     // Wake all waiting consumers
     for (int i = 0; i < 8; i++) {
         OS_SemaphorePost(rb->sem);
