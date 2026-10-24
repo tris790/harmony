@@ -643,7 +643,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   AudioEncoder *audio_encoder = Audio_InitEncoder(arena);
 
   // Main thread Network Setup (shared by worker threads)
-  NetworkContext *net = Net_Init(arena, 9999, true);
+  NetworkContext *net = Net_Init(arena, 9090, true);
   if (!net)
     return 1;
 
@@ -752,7 +752,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
                            &broadcast_cb);
       } else {
         Protocol_SendPunch(&encoder_ctx.packetizer, Net_SendPacketCallback,
-                           &(NetCallbackData){net, target_ip, 9999});
+                           &(NetCallbackData){net, target_ip, 9090});
       }
       OS_MutexUnlock(packetizer_mutex);
       time_since_host_punch = 0.0f;
@@ -877,13 +877,13 @@ int RunViewer(MemoryArena *arena, WindowContext *window, const char *host_ip,
   (void)verbose;
   printf("Starting Multi-Threaded VIEWER Mode...\n");
 
-  NetworkContext *net = Net_Init(arena, 9999, true);
+  NetworkContext *net = Net_Init(arena, 9090, true);
   if (!net)
     return 1;
 
   Packetizer punch_packetizer = {0};
   NetCallbackData punch_cb = {
-      .net = net, .dest_ip = host_ip, .dest_port = 9999};
+      .net = net, .dest_ip = host_ip, .dest_port = 9090};
 
   DecoderContext *decoder = Codec_InitDecoder(arena);
   AudioDecoder *audio_decoder = Audio_InitDecoder(arena);
