@@ -491,7 +491,7 @@
             }
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const url = `${protocol}//${targetHost}:8080`;
+            const url = `${protocol}//${targetHost}:9091`;
 
             console.log(`Connecting to ${url}...`);
             statusText.innerHTML = `Connecting <span class="connecting-dots"></span>`;

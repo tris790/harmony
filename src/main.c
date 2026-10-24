@@ -647,7 +647,7 @@ int RunHost(MemoryArena *arena, WindowContext *window, const char *target_ip,
   if (!net)
     return 1;
 
-  WebSocketContext *ws = WS_Init(arena, 8080);
+  WebSocketContext *ws = WS_Init(arena, 9091);
 
   // Video Format Setup
   int target_fps = (config && config->fps > 0) ? config->fps : 60;
